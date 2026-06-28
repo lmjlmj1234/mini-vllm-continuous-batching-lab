@@ -1,0 +1,10 @@
+# mini-vLLM Continuous Batching Lab
+#
+# Core — always needed
+pytest>=8.0
+
+# QwenExecutor (optional — the package works without these for the
+# "fake" executor type.  Only needed when Config.executor_type="qwen").
+torch>=2.0
+transformers>=4.40
+accelerate>=0.30

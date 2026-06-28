@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "mini-vllm-continuous-batching"
+version = "0.1.0"
+description = "Educational mini-vLLM Continuous Batching implementation"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mini_vllm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
