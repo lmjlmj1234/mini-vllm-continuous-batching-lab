@@ -34,6 +34,14 @@ class MetricsCollector:
         self._timeline_total_blocks: int = 0
         self._finished_seqs: List[Sequence] = []
 
+        # Serving-layer counters
+        self._total_requests: int = 0
+        self._rejected_requests: int = 0
+        self._cancelled_requests: int = 0
+        self._timeout_requests: int = 0
+        self._rpm_rejected: int = 0
+        self._tpm_rejected: int = 0
+
     # ------------------------------------------------------------------
     # Recording – called by EngineCore after each step
     # ------------------------------------------------------------------
@@ -58,6 +66,28 @@ class MetricsCollector:
     def register_sequence(self, seq: Sequence) -> None:
         """Register a finished sequence for final metrics."""
         self._finished_seqs.append(seq)
+
+    # ------------------------------------------------------------------
+    # Serving-layer counters
+    # ------------------------------------------------------------------
+
+    def count_request(self) -> None:
+        self._total_requests += 1
+
+    def count_rejected(self) -> None:
+        self._rejected_requests += 1
+
+    def count_cancelled(self) -> None:
+        self._cancelled_requests += 1
+
+    def count_timeout(self) -> None:
+        self._timeout_requests += 1
+
+    def count_rpm_rejected(self) -> None:
+        self._rpm_rejected += 1
+
+    def count_tpm_rejected(self) -> None:
+        self._tpm_rejected += 1
 
     # ------------------------------------------------------------------
     # Reporting
@@ -187,6 +217,13 @@ class MetricsCollector:
                 round(sum(self._timeline_cached) / total_prompt_tokens * 100, 1)
                 if total_prompt_tokens > 0 else 0.0
             ),
+            # Serving-layer
+            "total_requests_serving": self._total_requests,
+            "rejected_requests": self._rejected_requests,
+            "cancelled_requests": self._cancelled_requests,
+            "timeout_requests": self._timeout_requests,
+            "rpm_rejected": self._rpm_rejected,
+            "tpm_rejected": self._tpm_rejected,
             # Scheduler
             "avg_scheduler_latency_ms": round(avg_sched_ms, 4),
             "max_scheduler_latency_ms": round(max_sched_ms, 4),

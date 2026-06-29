@@ -46,6 +46,9 @@ class EngineCore:
         step_start = time.time()
         self._step_count += 1
 
+        # Check for timeouts before scheduling
+        self._check_timeouts()
+
         # --- Schedule (timed) ---
         sched_start = time.time()
         result = self._scheduler.schedule()
@@ -95,3 +98,68 @@ class EngineCore:
     @property
     def step_count(self) -> int:
         return self._step_count
+
+    # ------------------------------------------------------------------
+    # Cancel / Timeout
+    # ------------------------------------------------------------------
+
+    def cancel_request(self, request_id: str) -> bool:
+        """Cancel a running or waiting request and free its resources.
+
+        Returns True if the request was found and cancelled.
+        """
+        sg = self._scheduler._queue.get_by_id(request_id)
+        if sg is None:
+            return False
+
+        for seq in sg.seqs:
+            if not seq.finished:
+                seq.status = Status.CANCELLED
+                seq.finish_time = time.time()
+                self._scheduler._block_manager.free(seq.seq_id)
+                self._executor.cleanup_sequence(seq.seq_id)
+                self._metrics.register_sequence(seq)
+
+        # Count cancellation even if no sequences (unscheduled request)
+        self._metrics.count_cancelled()
+
+        # Remove from queue
+        if request_id in self._scheduler._queue._running:
+            self._scheduler._queue._running.pop(request_id)
+        elif request_id in self._scheduler._queue._waiting:
+            self._scheduler._queue._waiting.pop(request_id)
+        if request_id not in self._scheduler._queue._finished:
+            self._scheduler._queue._finished[request_id] = sg
+        return True
+
+    def _check_timeouts(self) -> None:
+        """Find and cancel requests exceeding timeout threshold."""
+        now = time.time()
+        timeout = self._scheduler._config.request_timeout_s
+        to_cancel: List[str] = []
+        for sg in self._scheduler._queue.running:
+            if now - sg.arrival_time > timeout:
+                to_cancel.append((sg.request_id, "running"))
+        for sg in self._scheduler._queue.waiting:
+            if now - sg.arrival_time > timeout:
+                to_cancel.append((sg.request_id, "waiting"))
+        for rid, pool_name in to_cancel:
+            sg = self._scheduler._queue.get_by_id(rid)
+            if sg is None:
+                continue
+            # Cancel sequences if any were created (scheduled requests)
+            for seq in sg.seqs:
+                if not seq.finished:
+                    seq.status = Status.TIMEOUT
+                    seq.finish_time = now
+                    self._scheduler._block_manager.free(seq.seq_id)
+                    self._executor.cleanup_sequence(seq.seq_id)
+                    self._metrics.register_sequence(seq)
+            # Count timeout even for groups with no sequences (unscheduled)
+            self._metrics.count_timeout()
+            if pool_name == "running":
+                self._scheduler._queue._running.pop(rid)
+            else:
+                self._scheduler._queue._waiting.pop(rid)
+            if rid not in self._scheduler._queue._finished:
+                self._scheduler._queue._finished[rid] = sg

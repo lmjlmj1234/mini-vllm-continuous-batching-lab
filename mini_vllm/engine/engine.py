@@ -128,6 +128,10 @@ class LLMEngine:
                 break
         return self.get_outputs()
 
+    def cancel_request(self, request_id: str) -> bool:
+        """Cancel a request by ID, freeing all resources."""
+        return self._engine_core.cancel_request(request_id)
+
     def get_outputs(self) -> Dict[str, str]:
         return dict(self._outputs)
 

@@ -15,8 +15,7 @@ class Config:
     """Maximum total tokens across all sequences in a single step."""
 
     max_num_prefill_tokens: int = 16
-    """Maximum prefill tokens per step.  Separate from max_num_batched_tokens
-    so that decode gets guaranteed budget even under heavy prefill."""
+    """Maximum prefill tokens per step."""
 
     chunked_prefill_enabled: bool = True
     """If True, prompts longer than max_prefill_chunk_size are split across
@@ -35,22 +34,39 @@ class Config:
     num_gpu_blocks: int = 8
     """Total physical blocks in the KV cache pool."""
 
+    # --- Serving ---
+    max_model_len: int = 2048
+    """Maximum prompt length the model can accept."""
+
+    max_queue_len: int = 32
+    """Maximum number of requests in the waiting queue."""
+
+    max_num_streams: int = 16
+    """Maximum concurrent active SSE streams."""
+
+    rate_limit_rpm: int = 60
+    """Maximum requests per minute."""
+
+    rate_limit_tpm: int = 100000
+    """Maximum tokens per minute (prompt + generation)."""
+
+    request_timeout_s: float = 60.0
+    """Maximum wall-clock time per request before auto-cancel."""
+
     # --- Fake Model Runner ---
     vocab_size: int = 256
     """Fake vocabulary size used for tokenisation and sampling."""
 
     # --- Executor ---
     executor_type: str = "fake"
-    """Which executor to use: ``"fake"`` (FakeModelExecutor) or ``"qwen"``
-    (QwenExecutor via HuggingFace Transformers)."""
+    """Which executor to use: ``"fake"`` or ``"qwen"``."""
 
     # --- Engine ---
     print_step_events: bool = True
     """Whether to print schedule events at each engine step."""
 
     memory_trace: bool = False
-    """If True, print detailed BlockAllocator free list and per-sequence
-    BlockTable at each step.  Used for educational debugging."""
+    """If True, print detailed BlockAllocator free list at each step."""
 
     DTYPE: str = "float16"
     """Data type used for the KV cache (documentation)."""
@@ -66,3 +82,8 @@ class Config:
         assert self.executor_type in ("fake", "qwen"), (
             f"executor_type must be 'fake' or 'qwen', got {self.executor_type!r}"
         )
+        assert self.max_queue_len > 0
+        assert self.max_num_streams > 0
+        assert self.rate_limit_rpm > 0
+        assert self.rate_limit_tpm > 0
+        assert self.request_timeout_s > 0

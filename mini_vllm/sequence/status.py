@@ -7,6 +7,8 @@ class Status(Enum):
     RUNNING = auto()
     FINISHED = auto()
     REJECTED = auto()
+    CANCELLED = auto()
+    TIMEOUT = auto()
 
     def __repr__(self) -> str:
         return self.name

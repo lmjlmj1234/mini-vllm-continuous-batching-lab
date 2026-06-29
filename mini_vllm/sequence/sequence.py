@@ -37,7 +37,7 @@ class Sequence:
 
     @property
     def finished(self) -> bool:
-        return self.status in (Status.FINISHED, Status.REJECTED)
+        return self.status in (Status.FINISHED, Status.REJECTED, Status.CANCELLED, Status.TIMEOUT)
 
     @property
     def prompt_length(self) -> int:
