@@ -461,6 +461,8 @@ Scheduler Phase 5 (Admit):
 
 ## 7. 项目与真实 vLLM 对比
 
+For a complete module-by-module mapping, see [`docs/VLLM_Mapping.md`](./VLLM_Mapping.md).
+
 ### Already Implemented
 
 | 特性 | mini-vLLM | 真实 vLLM | 一致？ |

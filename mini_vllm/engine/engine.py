@@ -13,6 +13,7 @@ from ..sequence.sequence_group import RequestQueue, SequenceGroup
 from ..sequence.sampling_params import SamplingParams
 from ..sequence.status import Status
 from .engine_core import EngineCore
+from .stage_profiler import StageProfiler
 
 
 class LLMEngine:
@@ -39,11 +40,15 @@ class LLMEngine:
         self._queue = RequestQueue()
         self._seq_group_count = 0
 
+        # Create profiler (wired to BlockManager after EngineCore is built)
+        self._profiler = StageProfiler()
+
         # Build the BlockAllocator and BlockManager first
         allocator = BlockAllocator(
             num_blocks=self._config.num_gpu_blocks,
         )
-        self._block_manager = BlockManager(self._config.block_size, allocator)
+        self._block_manager = BlockManager(self._config.block_size, allocator,
+                                           profiler=self._profiler)
 
         # Create worker → executor
         self._worker = self._create_worker()
@@ -57,7 +62,8 @@ class LLMEngine:
             on_free=self._executor.release_block,
         )
         self._scheduler = Scheduler(self._config, self._block_manager, self._queue)
-        self._engine_core = EngineCore(self._scheduler, self._executor)
+        self._engine_core = EngineCore(self._scheduler, self._executor,
+                                       profiler=self._profiler)
 
         self._outputs: Dict[str, str] = {}
 
@@ -260,3 +266,7 @@ class LLMEngine:
     @property
     def engine_core(self) -> EngineCore:
         return self._engine_core
+
+    @property
+    def profiler(self) -> StageProfiler:
+        return self._profiler

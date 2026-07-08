@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import time
 from typing import Dict, List, Optional, Tuple
 
 from ..sequence.sequence import Sequence
@@ -14,7 +14,7 @@ from .prefix_cache import (
 
 class BlockManager:
     """On-demand BlockAllocator with Prefix Cache support.
-
+    它不自己管物理块，而是封装了 Allocator + PrefixCache + BlockTable 三者的协作
     ``Sequence`` starts with **zero blocks**.  Blocks are allocated one at a
     time through ``ensure_block()``.  However, when a sequence is admitted,
     its prompt prefix is hashed and looked up in the Prefix Cache —
@@ -30,19 +30,22 @@ class BlockManager:
                                   → miss → allocate → insert(hash, pid)
     """
 
-    def __init__(self, block_size: int, allocator: BlockAllocator) -> None:
-        self._block_size = block_size
-        self._allocator = allocator
-        self._tables: Dict[str, BlockTable] = {}
-        self._prefix_cache = PrefixCache()
+    def __init__(self, block_size: int, allocator: BlockAllocator,
+                 profiler: Optional[object] = None) -> None:
+        self._block_size = block_size #块大小
+        self._allocator = allocator #持有底层 BlockAllocator 的引用（不是自己创建）
+        self._tables: Dict[str, BlockTable] = {} # 请求 ID → BlockTable 的字典，一个 Sequence 对应一张表
+        self._prefix_cache = PrefixCache() # 前缀缓存实例
+        self._profiler = profiler
+        """Optional profiler for stage timing (kv_cache_allocation, etc.)."""
 
         # Per-seq metadata
-        self._shared_prefix_blocks: Dict[str, int] = {}
+        self._shared_prefix_blocks: Dict[str, int] = {} # 每条序列的共享块数量。记录它的 prompt 前几个逻辑块是通过缓存共享的
         """Number of logical blocks shared via prefix cache."""
-        self._block_hashes: Dict[str, List[int]] = {}
+        self._block_hashes: Dict[str, List[int]] = {} # 每条序列预计算的 prompt 块 hash 列表
         """Pre-computed block hashes for a sequence's prompt."""
 
-        # Memory trace events
+        # Memory trace events #分配/释放追踪，用于调试和测试
         self._trace_allocated: Dict[str, List[int]] = {}
         self._trace_freed: Dict[str, List[int]] = {}
 
@@ -52,9 +55,11 @@ class BlockManager:
 
     @property
     def prefix_cache(self) -> PrefixCache:
+        # 暴露前缀缓存实例（供外部只读访问）
         return self._prefix_cache
 
     def compute_block_hashes(self, seq: Sequence) -> List[int]:
+        # 把 Sequence 的 prompt token IDs 按 block_size 切成 N 个块，每个块算一个 hash。比如 block_size=4，prompt 长度 10，就会算 3 个 hash（4+4+2）。结果用于前缀缓存匹配
         """Pre-compute block-level hashes for a sequence's prompt."""
         return compute_block_hashes(seq.prompt_token_ids, self._block_size)
 
@@ -71,6 +76,7 @@ class BlockManager:
         Only consecutive matches from block index 0 count.  The first
         miss or stale entry ends the matched prefix.
         """
+        t0 = time.time()
         hashes = compute_block_hashes(prompt_token_ids, self._block_size)
         matched_pids: List[int] = []
 
@@ -85,11 +91,14 @@ class BlockManager:
         # Cap at prompt length: the last matched block may be partial,
         # so block_size * matched_count could exceed the actual prompt.
         max_cached = matched_count * self._block_size
-        return PrefixCacheProbeResult(
+        result = PrefixCacheProbeResult(
             matched_block_count=matched_count,
             cached_token_count=min(max_cached, len(prompt_token_ids)),
             matched_physical_block_ids=matched_pids,
         )
+        if self._profiler:
+            self._profiler.record_raw("prefix_cache_lookup", time.time() - t0)
+        return result
 
     # ------------------------------------------------------------------
     # On-demand allocation with Prefix Cache
@@ -133,7 +142,7 @@ class BlockManager:
 
     def ensure_block(self, seq: Sequence, position: int) -> int:
         """Ensure a physical block exists for the given token position.
-
+         "确保某个 token 位置已经有物理块了"。执行器在写 KV cache 时调用这个。返回物理块 ID
         Returns the physical block ID.  For positions within an already-
         shared or already-allocated block, returns immediately.
 
@@ -142,7 +151,7 @@ class BlockManager:
         registered by another sequence between admission and now).
         If no cache hit, allocates a new block and registers it.
         """
-        logical_idx = position // self._block_size
+        logical_idx = position // self._block_size #位置 → 逻辑块编号。比如 block_size=4，position=6 → logical_idx=1
         table = self._tables.get(seq.seq_id)
 
         if table is None:
@@ -151,7 +160,7 @@ class BlockManager:
 
         shared_count = self._shared_prefix_blocks.get(seq.seq_id, 0)
 
-        while logical_idx >= table.num_blocks():
+        while logical_idx >= table.num_blocks():#如果需要的逻辑块编号大于当前表的长度，说明需要加新块
             # We need to add a new block.  Check prefix cache first.
             is_prompt_position = position < len(seq.prompt_token_ids)
             cached_pid: Optional[int] = None
@@ -161,7 +170,7 @@ class BlockManager:
                 if hashes is not None and logical_idx < len(hashes):
                     h = hashes[logical_idx]
                     cached_pid = self._prefix_cache.lookup(h)
-
+            # 先查缓存：如果这个位置是 prompt 的一部分（不是 decode 生成的 token），就拿着预计算的 hash 去前缀缓存里查查看。可能有其他序列在分配后又缓存了新块
             shared = False
             if cached_pid is not None:
                 if self._allocator.get_ref_count(cached_pid) > 0:
@@ -170,9 +179,10 @@ class BlockManager:
                     table.add_shared_block(cached_pid)
                     shared = True
                 # else: stale cache entry — treat as miss, allocate below
-
+            # 缓存命中、引用有效 → 共享，加引用计数
             if not shared:
                 # Allocate new block
+                alloc_t0 = time.time()
                 pids = self._allocator.allocate(1)
                 if pids is None:
                     raise RuntimeError(
@@ -182,6 +192,10 @@ class BlockManager:
                     )
                 pid = pids[0]
                 table.add_block(pid)
+                #没有命中 → 真正从 Allocator 分配一个物理块。如果 Allocator 返回 None（没空闲块了），就抛 OOM 异常
+                if self._profiler:
+                    self._profiler.record_raw("kv_cache_allocation",
+                                              time.time() - alloc_t0)
 
                 # Register the new block in prefix cache (only for prompt
                 # positions — decode tokens are unpredictable)
@@ -189,12 +203,12 @@ class BlockManager:
                     hashes = self._block_hashes.get(seq.seq_id)
                     if hashes is not None and logical_idx < len(hashes):
                         self._prefix_cache.insert(hashes[logical_idx], pid)
-
+                #立即注册到前缀缓存 — prompt 的块在写之前就知道内容了，可以提前注册。这样后续的请求就能命中这个块。
                 # Trace
                 self._trace_allocated.setdefault(seq.seq_id, []).append(pid)
-
+                #   记录分配追踪
             seq.block_table = table.get_block_ids()
-
+            #返回该 token 位置对应的物理块 ID
         return table.get_physical_block(position)
 
     def is_block_shared(self, seq: Sequence, position: int) -> bool:
@@ -203,6 +217,7 @@ class BlockManager:
         The executor can use this to skip KV writes for shared blocks
         (the data already exists).
         """
+        #  "这个位置的块是共享的吗？" 执行器在 decode 阶段写 KV cache 之前调用。如果是共享块，需要走 Copy-on-Write（分配新块、拷贝数据），不能直接覆盖。
         return self._tables.get(seq.seq_id, BlockTable("_", self._block_size)).is_shared_at(position)  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
@@ -217,6 +232,7 @@ class BlockManager:
         free pool.  A block is only truly returned when its ref_count
         reaches zero.
         """
+        free_t0 = time.time()
         table = self._tables.pop(seq_id, None)
         if table is None:
             return
@@ -225,6 +241,8 @@ class BlockManager:
         if pids:
             self._trace_freed[seq_id] = pids
         table.clear()
+        if self._profiler:
+            self._profiler.record_raw("kv_cache_release", time.time() - free_t0)
         self._shared_prefix_blocks.pop(seq_id, None)
         self._block_hashes.pop(seq_id, None)
 

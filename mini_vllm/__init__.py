@@ -45,6 +45,7 @@ from .worker.qwen_worker import QwenWorker
 from .engine.engine_core import EngineCore
 from .engine.engine import LLMEngine
 from .engine.metrics import MetricsCollector
+from .engine.stage_profiler import StageProfiler
 
 # ------------------------------------------------------------------
 # Config
@@ -84,4 +85,5 @@ __all__ = [
     "EngineCore",
     "LLMEngine",
     "MetricsCollector",
+    "StageProfiler",
 ]

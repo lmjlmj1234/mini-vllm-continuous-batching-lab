@@ -202,15 +202,4 @@ Executor 回答的问题是：
 
 ### 真实 vLLM 中的对应关系
 
-在真实 vLLM 中，同样的架构设计存在：
-
-| 我们的设计 | 真实 vLLM |
-|-----------|----------|
-| `Executor` (Protocol) | `ModelRunner` 的抽象接口 |
-| `FakeModelExecutor` | 无对应（纯测试用） |
-| `QwenExecutor` | `GPUModelRunner` / `CPUModelRunner` |
-| `Scheduler` | `Scheduler`（几乎完全相同） |
-| `BlockManager` | `BlockSpaceManager` |
-| `ScheduleResult` | `SchedulerOutputs` |
-
-真实 vLLM 的 Scheduler 同样不需要知道模型是 GPT-NeoX 还是 Llama —— 它只关心 block table、token budget 和序列状态。
+For a complete module-by-module mapping, see [`docs/VLLM_Mapping.md`](../docs/VLLM_Mapping.md). The key correspondence is: `Executor` (Protocol) ↔ `ModelRunner` abstract interface, `FakeModelExecutor` ↔ no equivalent (pure testing), `QwenExecutor` ↔ `GPUModelRunner` / `CPUModelRunner`.

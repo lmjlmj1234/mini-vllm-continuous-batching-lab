@@ -9,6 +9,7 @@ from ..scheduler.schedule_result import ScheduleResult
 from ..sequence.sequence import Sequence
 from ..sequence.status import Status
 from .metrics import MetricsCollector
+from .stage_profiler import StageProfiler
 
 
 class EngineCore:
@@ -32,10 +33,12 @@ class EngineCore:
         scheduler: Scheduler,
         executor: Executor,
         metrics_collector: Optional[MetricsCollector] = None,
+        profiler: Optional[StageProfiler] = None,
     ) -> None:
         self._scheduler = scheduler
         self._executor = executor
         self._metrics = metrics_collector or MetricsCollector()
+        self._profiler = profiler or StageProfiler()
         self._step_count = 0
 
     def step(self) -> ScheduleResult:
@@ -44,50 +47,74 @@ class EngineCore:
         Returns the ``ScheduleResult`` for inspection / testing.
         """
         step_start = time.time()
-        self._step_count += 1
+        with self._profiler.record("engine_step_total"):
+            self._step_count += 1
+            self._profiler.increment_steps()
 
-        # Check for timeouts before scheduling
-        self._check_timeouts()
+            # Check for timeouts before scheduling
+            self._check_timeouts()
 
-        # --- Schedule (timed) ---
-        sched_start = time.time()
-        result = self._scheduler.schedule()
-        sched_latency = time.time() - sched_start
+            # --- Schedule ---
+            sched_start = time.time()
+            with self._profiler.record("scheduler_step"):
+                result = self._scheduler.schedule()
+            sched_latency = time.time() - sched_start
 
-        # --- Prefill ---
-        only_prefill_seqs: List[Sequence] = []
-        for sg in result.scheduled_prefill_groups:
-            for seq in sg.get_unfinished_seqs():
-                if seq.status == Status.PREFILL:
-                    only_prefill_seqs.append(seq)
+            # Record request queue waiting for newly admitted sequences
+            for sg in result.scheduled_prefill_groups:
+                for seq in sg.get_unfinished_seqs():
+                    if seq.first_scheduled_time is not None:
+                        continue
+                    seq.first_scheduled_time = time.time()
+                    waiting_s = seq.first_scheduled_time - seq.arrival_time
+                    self._profiler.record_raw("request_queue_waiting", waiting_s)
+                    self._profiler.increment_requests()
 
-        if only_prefill_seqs:
-            t = time.time()
-            self._executor.prefill(only_prefill_seqs)
-            for seq in only_prefill_seqs:
-                if seq.is_prefill_finished:
-                    seq.first_token_time = t
+            # --- Prefill & Decode (with combined executor_forward) ---
+            only_prefill_seqs: List[Sequence] = []
+            for sg in result.scheduled_prefill_groups:
+                for seq in sg.get_unfinished_seqs():
+                    if seq.status == Status.PREFILL:
+                        only_prefill_seqs.append(seq)
 
-        # --- Decode ---
-        decode_seqs: List[Sequence] = []
-        for sg in result.scheduled_decode_groups:
-            decode_seqs.extend(sg.get_unfinished_seqs())
+            decode_seqs: List[Sequence] = []
+            for sg in result.scheduled_decode_groups:
+                decode_seqs.extend(sg.get_unfinished_seqs())
 
-        if decode_seqs:
-            self._executor.decode(decode_seqs)
+            has_prefill = bool(only_prefill_seqs)
+            has_decode = bool(decode_seqs)
 
-        # --- Cleanup finished sequences ---
-        for sg in result.finished_groups:
-            for seq in sg.seqs:
-                self._executor.cleanup_sequence(seq.seq_id)
-                self._metrics.register_sequence(seq)
+            if has_prefill or has_decode:
+                with self._profiler.record("executor_forward"):
+                    if has_prefill:
+                        with self._profiler.record("prefill"):
+                            self._executor.prefill(only_prefill_seqs)
+                        for seq in only_prefill_seqs:
+                            if seq.is_prefill_finished:
+                                # first_token_time is set AFTER prefill completes,
+                                # marking when the first output token was produced.
+                                # This is more accurate than capturing time before
+                                # prefill (which would under-report TTFT).
+                                seq.first_token_time = time.time()
+                    if has_decode:
+                        with self._profiler.record("decode"):
+                            self._executor.decode(decode_seqs)
 
-        # --- Record step metrics ---
-        step_wall = time.time() - step_start
-        bm_stats = self._scheduler.block_manager_stats()
-        total_blocks = bm_stats["total_blocks"]
-        used_blocks = bm_stats["used_blocks"]
-        self._metrics.record_step(result, sched_latency, step_wall, total_blocks, used_blocks)
+            # --- Cleanup finished sequences ---
+            for sg in result.finished_groups:
+                for seq in sg.seqs:
+                    self._executor.cleanup_sequence(seq.seq_id)
+                    self._metrics.register_sequence(seq)
+
+            # --- Record step metrics ---
+            step_wall = time.time() - step_start
+            with self._profiler.record("metrics_update"):
+                bm_stats = self._scheduler.block_manager_stats()
+                total_blocks = bm_stats["total_blocks"]
+                used_blocks = bm_stats["used_blocks"]
+                self._metrics.record_step(
+                    result, sched_latency, step_wall, total_blocks, used_blocks
+                )
 
         return result
 

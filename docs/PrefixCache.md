@@ -414,22 +414,8 @@ Step N:
 
 ## 与真实 vLLM 的对应
 
-| mini-vLLM | 真实 vLLM | 差异 |
-|-----------|----------|------|
-| `PrefixCache` | `BlockPrefixMgr` | 真实 vLLM 使用 LRU 缓存，支持 eviction |
-| `PrefixCacheProbeResult` | Scheduler 内部 prefix 匹配结果 | 真实 vLLM 在 Scheduler 内直接计算，无显式 probe 对象 |
-| `probe_prefix_cache()` | Scheduler 的 `_get_cached_prefix_len()` | 概念相同：查 cache 但不修改 ref |
-| Ref Count | `BlockAllocator.refcount` | 完全一致 |
-| `BlockTableEntry.is_shared` | `LogicalTokenBlock` | 真实 vLLM 在 block 粒度跟踪共享 |
-| `allocate_for_seq` + cache | Scheduler `PrefixCacheHit` | 真实 vLLM 在 scheduler 内做 prefix matching |
-| Scheduler 预算使用 uncached tokens | Scheduler `num_unmatched_tokens` | 完全一致的设计决策 |
-| `prefill_cursor = cached_token_count` | `seq.data.num_computed_tokens` | 语义相同：跳过已计算部分 |
-| `result.cached_token_count` | 无直接对应（vLLM 在日志中 tracking） | 教育实现更显式 |
-| `matched_block_count` | `num_matched_blocks` | 概念相同 |
-| Hash function | `hash_request_time` | 真实 vLLM 使用更复杂的 hash 避免碰撞 |
-| COW 扩展点 | `copy-on-write` | 真实 vLLM 在 `BlockSpaceManager` 中实现 |
+For a complete module-by-module mapping, see [`docs/VLLM_Mapping.md`](./VLLM_Mapping.md). Key prefix-cache-specific differences:
 
-主要差异：
 - 真实 vLLM 在 Scheduler 层做 prefix 匹配（决定能跳过多少 prefill）
 - 我们的 probe 是 BlockManager 的方法，Scheduler 调用它——接口更清晰
 - 真实 vLLM 有缓存淘汰（LRU），我们暂未实现

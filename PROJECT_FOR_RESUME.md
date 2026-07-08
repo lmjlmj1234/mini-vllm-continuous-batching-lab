@@ -44,6 +44,24 @@ tests/                # 79 tests across scheduler, cache, prefix cache, engine
 | Block level sharing | Zero-copy KV via ref_count |
 | Prefix cache | Hash-based, block-level, stale-safe |
 | Config knobs | max_num_seqs, max_batched_tokens, block_size, chunk_size |
+| Stage Profiler | 10-stage breakdown for TTFT/TPOT bottleneck analysis |
+
+## 面试亮点：Stage Breakdown Profiling
+
+新增轻量级 stage profiler，可在一次 serving 请求中将端到端耗时拆解为：
+
+- **request_queue_waiting** — 队列等待
+- **scheduler_step** — 调度开销
+- **kv_cache_allocation** — KV block 分配
+- **prefix_cache_lookup** — 前缀缓存查询
+- **executor_forward** — 模型推理（prefill + decode）
+- **prefill** / **decode** — 分别计时
+- **kv_cache_release** — block 释放
+- **metrics_update** — 指标采集
+- **engine_step_total** — 引擎 step 总耗时
+
+支持 fake executor（纯 CPU、无依赖）和 Qwen executor（真实模型）双模式。
+输出瓶颈提示，帮助面试中系统性地解释 TTFT/TPOT/P99 的瓶颈来源。
 
 ## 技术栈
 

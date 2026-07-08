@@ -13,7 +13,6 @@ Usage::
 import argparse
 import os
 import sys
-import time
 
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
@@ -93,11 +92,11 @@ def main() -> None:
         print(f"  Added request {rid}: prompt={prompt[:40]!r}...  (max_tokens={args.tokens})")
 
     print(f"\n  Running {args.requests} requests to completion...")
-    t0 = time.time()
     outputs = engine.run_until_done()
-    elapsed = time.time() - t0
 
-    print(f"  Done in {elapsed:.3f}s\n")
+    report = engine.engine_core.metrics_collector.report()
+    print(f"  Done in {report['total_time_seconds']:.3f}s"
+          f"  (active: {report['active_time_seconds']:.3f}s)\n")
 
     # Print outputs
     print("=" * 60)
@@ -119,7 +118,8 @@ def main() -> None:
         print(f"  TTFT={report['avg_ttft_ms']}ms, TPOT={report['avg_tpot_ms']}ms — "
               f"these are CPU arithmetic, not real inference.")
     else:
-        device = "GPU" if getattr(engine.executor._model, "is_cuda", False) else "CPU"
+        p = next(engine.executor._model.parameters(), None)
+        device = "GPU" if (p is not None and p.is_cuda) else "CPU"
         print(f"  Qwen2-0.5B real inference metrics.")
         print(f"  TTFT={report['avg_ttft_ms']}ms — time includes model forward pass.")
         print(f"  TPOT={report['avg_tpot_ms']}ms — per-token decode latency on "

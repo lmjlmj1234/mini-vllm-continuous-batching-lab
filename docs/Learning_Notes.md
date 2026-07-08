@@ -166,33 +166,12 @@ vLLM's scheduler behaviour.
 ### Memory Trace — Eager Allocation Waste
 
 The Memory Trace mode (`config.memory_trace=True`) revealed a critical
-inefficiency.  Our BlockManager still uses **eager allocation**: at admission
-time, a sequence is allocated `ceil((prompt_len + max_tokens) / block_size)`
-blocks — its entire lifetime requirement up front.
+inefficiency — eager allocation wastes blocks reserved for future tokens.
+For the detailed comparison table and ASCII pool diagram, see
+[`docs/Memory_Manager.md`](./Memory_Manager.md) (Section 4: Eager vs On-Demand
+Trace Comparison).
 
-The trace from the demo (3 requests, 16 blocks, block_size=4) shows the
-consequences clearly:
-
-| Step | Free blocks | Used | Actually needed | Slack (wasted) |
-|------|------------|------|----------------|---------------|
-| 1    | 4          | 12   | 2 (A:1, B:1)  | 10            |
-| 3    | **0**      | 16   | 7 (A:3, B:3, C:1) | **9**    |
-| 4-10 | **0**      | 16   | 7              | **9** (stuck) |
-| 11   | 9          | 7    | 4 (B:4)        | 3             |
-
-At step 3, all 16 blocks are allocated (100% utilisation reported), but only
-7 blocks contain any KV data. 9 blocks (56% of the cache) are reserved for
-future tokens that haven't been generated yet.  A 4th request arriving at
-step 3 would be **rejected** despite having 9 blocks of effective free space.
-
-Root cause: eager allocation computes `blocks_needed = (prompt_len + max_tokens
-+ block_size - 1) // block_size` at admission and allocates that many physical
-blocks.  During prefill, only `ceil(cursor / block_size)` blocks are actually
-used.  During early decode, only `ceil((prompt_len + generated) / block_size)`
-blocks are used.  The gap between "allocated" and "really needed" persists
-for the entire lifetime of the request.
-
-**The insight**: KV cache pressure in eager mode comes from the *sum of worst-
+The insight: KV cache pressure in eager mode comes from the *sum of worst-
 case lifetimes*, not from the *sum of actual data*.  This is the fundamental
 motivation for **on-demand allocation** — allocate one block during prefill,
 then one more whenever the current block fills up during decode.  With

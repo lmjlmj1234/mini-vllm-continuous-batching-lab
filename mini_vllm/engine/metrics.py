@@ -16,12 +16,31 @@ class MetricsCollector:
     runtime architecture.
 
     Metrics tracked:
-      - **TTFT** (Time To First Token):  scheduler + prefill latency
-      - **TPOT** (Time Per Output Token): decode throughput
-      - **Throughput** (req/s & tok/s):  end-to-end system throughput
-      - **KV utilisation**:  how much of the block pool is in use
-      - **Block utilisation**:  how efficiently tokens pack into blocks
-      - **Scheduler latency**:  overhead of the scheduling algorithm
+
+      **TTFT** (Time To First Token): first_token_time - arrival_time
+          Measures scheduler + prefill latency.  Reported as avg/min/max in ms.
+
+      **TPOT** (Time Per Output Token, a.k.a. inter-token latency):
+          (finish_time - first_token_time) / max(num_output_tokens - 1, 1)
+          Measures average decode latency between successive output tokens.
+          Sequences with only 1 output token are excluded (no inter-token gap
+          to measure).  Reported as avg/min/max in ms.
+
+      **Throughput** (request_throughput_rps & token_throughput_tps):
+          completed_requests / total_elapsed_time  (req/s)
+          total_output_tokens / total_elapsed_time  (tok/s)
+          Only FINISHED sequences (not cancelled/timeout) are counted.
+
+      **KV utilisation**:  peak / total physical blocks in use
+      **Block utilisation**:  tokens packed per allocated block
+      **Scheduler latency**:  overhead of scheduler.schedule() per step
+
+    Formulas:
+        TTFT  = first_token_time - arrival_time
+        TPOT  = (finish_time - first_token_time) / max(num_output_tokens - 1, 1)
+               (single-token outputs excluded)
+        req/s = completed_requests / (last_finish_time - first_arrival_time)
+        tok/s = total_output_tokens / (last_finish_time - first_arrival_time)
     """
 
     def __init__(self) -> None:
@@ -99,7 +118,7 @@ class MetricsCollector:
         All timing values are in milliseconds unless noted.
         """
         finished = [s for s in self._finished_seqs if s.status == Status.FINISHED]
-        total_sequences = len(self._finished_seqs)
+        total_sequences = len(finished)
         total_steps = len(self._step_times)
 
         # --- TTFT (Time to First Token) ---
@@ -113,26 +132,36 @@ class MetricsCollector:
         max_ttft_ms = max(ttft_values) * 1000 if ttft_values else 0.0
         min_ttft_ms = min(ttft_values) * 1000 if ttft_values else 0.0
 
-        # --- TPOT (Time Per Output Token) ---
+        # --- TPOT (Time Per Output Token / inter-token latency) ---
         tpot_values = []
         for s in finished:
             if (
-                s.num_output_tokens > 0
+                s.num_output_tokens > 1  # need at least one inter-token gap
                 and s.first_token_time is not None
                 and s.finish_time is not None
             ):
                 decode_time = s.finish_time - s.first_token_time
-                tpot_values.append(decode_time / s.num_output_tokens)
+                tpot_values.append(decode_time / (s.num_output_tokens - 1))
 
         avg_tpot_ms = (sum(tpot_values) / len(tpot_values) * 1000) if tpot_values else 0.0
         max_tpot_ms = max(tpot_values) * 1000 if tpot_values else 0.0
         min_tpot_ms = min(tpot_values) * 1000 if tpot_values else 0.0
 
-        # --- End-to-end time ---
-        total_time_s = 0.0
-        for s in finished:
-            if s.arrival_time is not None and s.finish_time is not None:
-                total_time_s = max(total_time_s, s.finish_time - s.arrival_time)
+        # --- End-to-end time (wall-clock elapsed) ---
+        #
+        # total_time_s:  wall-clock from earliest arrival to latest finish.
+        #     This correctly captures idle gaps from staggered arrivals.
+        #     req/s = N / total_time_s gives the *workload-level* throughput.
+        #
+        # active_time_s:  sum of step wall-times (engine actively processing).
+        #     Excludes idle gaps (no requests in system).
+        #     req/s = N / active_time_s gives the *system-level* throughput
+        #     under continuous load.
+        #
+        arrivals = [s.arrival_time for s in finished if s.arrival_time is not None]
+        finishes = [s.finish_time for s in finished if s.finish_time is not None]
+        total_time_s = max(finishes) - min(arrivals) if arrivals and finishes else 0.0
+        active_time_s = sum(self._step_times) / 1000  # step_times stored in ms
 
         total_output_tokens = sum(s.num_output_tokens for s in finished)
         total_prompt_tokens = sum(s.prompt_length for s in finished)
@@ -140,6 +169,8 @@ class MetricsCollector:
         # --- Throughput ---
         throughput_req = total_sequences / total_time_s if total_time_s > 0 else 0.0
         throughput_tok = total_output_tokens / total_time_s if total_time_s > 0 else 0.0
+        active_throughput_req = total_sequences / active_time_s if active_time_s > 0 else 0.0
+        active_throughput_tok = total_output_tokens / active_time_s if active_time_s > 0 else 0.0
 
         # --- KV block utilization ---
         total_blocks = self._timeline_total_blocks
@@ -161,10 +192,6 @@ class MetricsCollector:
             total_blocks_for_seq = len(s.block_table)
             total_tokens = s.prompt_length + s.num_output_tokens
             if total_blocks_for_seq > 0:
-                # A full block holds block_size tokens.  Only the last block
-                # may be partial.  100% means every block is completely full.
-                optimal_blocks = (total_tokens + s.sampling_params.max_tokens - 1)  // s.sampling_params.max_tokens if False else 0
-                # Simpler: tokens packed per allocated block
                 util = total_tokens / total_blocks_for_seq
                 block_util_values.append(util)
 
@@ -198,12 +225,16 @@ class MetricsCollector:
             "avg_tpot_ms": round(avg_tpot_ms, 2),
             "min_tpot_ms": round(min_tpot_ms, 2),
             "max_tpot_ms": round(max_tpot_ms, 2),
-            # Throughput
+            # Throughput (wall-clock = workload-level)
             "throughput_req_per_sec": round(throughput_req, 2),
             "throughput_tok_per_sec": round(throughput_tok, 2),
+            # Throughput (active = system-level, excluding idle gaps)
+            "active_throughput_req_per_sec": round(active_throughput_req, 2),
+            "active_throughput_tok_per_sec": round(active_throughput_tok, 2),
             "total_output_tokens": total_output_tokens,
             "total_prompt_tokens": total_prompt_tokens,
             "total_time_seconds": round(total_time_s, 3),
+            "active_time_seconds": round(active_time_s, 3),
             # KV utilisation
             "kv_total_blocks": total_blocks,
             "kv_peak_blocks": peak_blocks,
@@ -243,15 +274,18 @@ class MetricsCollector:
               f"(prompt={r['total_prompt_tokens']} tok, "
               f"output={r['total_output_tokens']} tok)")
         print(f"  Steps:                 {r['total_steps']}")
-        print(f"  Total time:            {r['total_time_seconds']}s\n")
+        print(f"  Total time (wall):        {r['total_time_seconds']}s  "
+              f"(active: {r['active_time_seconds']}s)\n")
 
-        print(f"  TTFT (avg/min/max):    {r['avg_ttft_ms']} / {r['min_ttft_ms']} / "
+        print(f"  TTFT (avg/min/max):      {r['avg_ttft_ms']} / {r['min_ttft_ms']} / "
               f"{r['max_ttft_ms']} ms")
-        print(f"  TPOT (avg/min/max):    {r['avg_tpot_ms']} / {r['min_tpot_ms']} / "
+        print(f"  TPOT (avg/min/max):      {r['avg_tpot_ms']} / {r['min_tpot_ms']} / "
               f"{r['max_tpot_ms']} ms\n")
 
-        print(f"  Throughput:            {r['throughput_req_per_sec']} req/s,  "
-              f"{r['throughput_tok_per_sec']} tok/s\n")
+        print(f"  Throughput (wall):        {r['throughput_req_per_sec']} req/s,  "
+              f"{r['throughput_tok_per_sec']} tok/s")
+        print(f"  Throughput (active):      {r['active_throughput_req_per_sec']} req/s,  "
+              f"{r['active_throughput_tok_per_sec']} tok/s\n")
 
         print(f"  KV blocks (peak/avg):  {r['kv_peak_blocks']} / "
               f"{r['kv_util_avg_pct']}%  (of {r['kv_total_blocks']} total)")

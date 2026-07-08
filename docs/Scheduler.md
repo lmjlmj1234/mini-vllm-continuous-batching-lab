@@ -341,24 +341,84 @@ if decode_seqs:
 
 ## 7. vLLM Scheduler Mapping
 
-| mini-vLLM | vLLM | Notes |
-|-----------|------|-------|
-| `Scheduler.schedule()` | `Scheduler.schedule()` | Same entry point |
-| `ScheduleResult` | `SchedulerOutputs` | Same structure |
-| `scheduled_prefill_groups` | `seq_groups` (prefill) | vLLM also tracks `is_prefill=True` |
-| `scheduled_decode_groups` | `seq_groups` (decode) | vLLM sets `is_prefill=False` |
-| `ignored_groups` | `ignored_seq_groups` | Same concept |
-| `max_num_batched_tokens` | `max_num_batched_tokens` | Same config |
-| `max_num_seqs` | `max_num_seqs` | Same config |
-| Chunked prefill | `enable_chunked_prefill` | Same mechanism |
-| Decode-first priority | Implicit (decode always 1 token) | Same effect |
-| On-demand alloc via manager | `BlockSpaceManager` | Same three-layer split |
-| No preemption yet | Preemption via swap | Future work |
-| No priority scheduling | Priority via `priority` field | Future work |
+For a complete module-by-module mapping between mini-vLLM and real vLLM, see [`docs/VLLM_Mapping.md`](./VLLM_Mapping.md). The scheduler components (ScheduleResult ↔ SchedulerOutputs, token budget configs, chunked prefill semantics) all follow vLLM's design closely.
 
 ---
 
-## 8. Key Design Decisions
+## 8. Why Decode Is More Sensitive Than Prefill
+
+| Phase | Characteristic | User Impact |
+|-------|---------------|-------------|
+| **Prefill** | Compute-bound (process many tokens) | User sees first token latency (TTFT) |
+| **Decode** | Memory-bound (read KV cache) | User sees per-token latency (TPOT) |
+
+If decode is delayed, every active user feels a stall in their stream. If
+prefill is delayed by one step, one new user sees a slightly longer TTFT.
+The trade-off favors decode.
+
+## 9. Chunked Prefill — Detailed Benefits
+
+Without chunking, a request with a 4096-token prompt needs all 4096 KV cache
+entries written before the first output token:
+
+```
+# Without chunking — prompt_len=4096, max_num_batched_tokens=1024
+prompt_len 4096 > max_num_batched_tokens 1024 → REJECTED
+```
+
+**Chunked Prefill Benefits:**
+
+1. **No more head-of-line blocking** — A long prompt no longer blocks all
+   decode sequences for an entire step. The scheduler processes one chunk,
+   then lets decode happen.
+
+2. **Fine-grained budget control** — The scheduler can admit a long prompt
+   by allocating its first chunk, then continue on subsequent steps. Other
+   sequences are never starved.
+
+3. **Mirrors vLLM** — vLLM uses the same mechanism (`Scheduler._schedule_prefills`
+   iterates over waiting and running-prefill sequences, advancing cursor
+   by `max_num_prefill_tokens / num_prefill_seqs`).
+
+### Implementation Details
+
+- **Sequence.prefill_cursor** — tracks how many prompt tokens have been
+  written to KV. Starts at 0, incremented by the executor after each chunk.
+- **Sequence.is_prefill_finished** — property: `prefill_cursor >= prompt_length`.
+- **Scheduler** — prefill-continue groups (already in PREFILL state with
+  cursor > 0) are admitted during Phase 4, ahead of new waiting groups.
+  Each step advances the cursor by `max_prefill_chunk_size` tokens.
+- **Executor.prefill()** — reads from `seq.prefill_cursor`, writes
+  `chunk_size` tokens to KV. Only on the final chunk does it generate
+  the first output token and transition status to RUNNING.
+
+## 10. Config Changes (Introduced in Phase 2)
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_num_prefill_tokens` | 16 | Cap on prefill tokens per step |
+| `chunked_prefill_enabled` | True | Enable/disable chunked prefill |
+| `max_prefill_chunk_size` | 4 | Prompt tokens processed per prefill step |
+| `decode_first` | True | Decode sequences consume budget first |
+
+## 11. ScheduleResult Changes (Introduced in Phase 2)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `preempted_groups` | `List[SequenceGroup]` | Placeholder — not yet implemented |
+| `token_budget_remaining` | `int` | Remaining token budget after scheduling |
+| `debug_reason` | `str` | Human-readable scheduling summary (replaces `reason`) |
+| `ignored_reasons` | `Dict[str, str]` | Maps ignored group request_id → reason string |
+
+Reason strings for ignored groups:
+- `NO_TOKEN_BUDGET` — Not enough prefill token budget this step.
+- `MAX_NUM_SEQS_LIMIT` — Sequence count cap reached.
+- `NO_KV_BLOCK` — No free KV cache blocks (currently leads to rejection).
+- `WAITING_FOR_NEXT_STEP` — Mid-prefill sequence deferred (cursor cannot advance).
+
+---
+
+## 12. Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|

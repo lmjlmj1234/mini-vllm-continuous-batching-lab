@@ -30,6 +30,7 @@ class Config:
     # --- KV Cache ---
     block_size: int = 4
     """Number of tokens per physical block."""
+    # "每个物理块存几个 token"。KV cache 按块管理，一块存 n 个 token 的 key/value。块越小，内存浪费越少但管理开销越大；块越大则相反
 
     num_gpu_blocks: int = 8
     """Total physical blocks in the KV cache pool."""
