@@ -1,0 +1,31 @@
+{
+  "results": {
+    "bs1_ctx16": {
+      "triton_e2e_us": {
+        "median": 29410.7
+      },
+      "ref_e2e_us": {
+        "median": 42791.9
+      },
+      "speedup_e2e": 1.45
+    },
+    "bs1_ctx128": {
+      "triton_e2e_us": {
+        "median": 26646.0
+      },
+      "ref_e2e_us": {
+        "median": 91904.0
+      },
+      "speedup_e2e": 3.45
+    },
+    "bs1_ctx512": {
+      "triton_e2e_us": {
+        "median": 27577.4
+      },
+      "ref_e2e_us": {
+        "median": 310985.7
+      },
+      "speedup_e2e": 11.28
+    }
+  }
+}

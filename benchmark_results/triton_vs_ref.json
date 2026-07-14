@@ -1,0 +1,213 @@
+{
+  "results": {
+    "bs1_ctx16": {
+      "triton_kernel_us": {
+        "median": 113.81,
+        "p95": 210.05
+      },
+      "ref_kernel_us": {
+        "median": 483.94,
+        "p95": 815.41
+      },
+      "speedup_kernel": 4.25
+    },
+    "bs1_ctx128": {
+      "triton_kernel_us": {
+        "median": 157.04,
+        "p95": 254.76
+      },
+      "ref_kernel_us": {
+        "median": 2228.1,
+        "p95": 2958.64
+      },
+      "speedup_kernel": 14.19
+    },
+    "bs1_ctx512": {
+      "triton_kernel_us": {
+        "median": 345.98,
+        "p95": 434.22
+      },
+      "ref_kernel_us": {
+        "median": 6748.16,
+        "p95": 10171.85
+      },
+      "speedup_kernel": 19.5
+    },
+    "bs1_ctx1024": {
+      "triton_kernel_us": {
+        "median": 537.6,
+        "p95": 621.77
+      },
+      "ref_kernel_us": {
+        "median": 15839.38,
+        "p95": 17632.97
+      },
+      "speedup_kernel": 29.46
+    },
+    "bs2_ctx16": {
+      "triton_kernel_us": {
+        "median": 118.66,
+        "p95": 317.8
+      },
+      "ref_kernel_us": {
+        "median": 878.26,
+        "p95": 1670.51
+      },
+      "speedup_kernel": 7.4
+    },
+    "bs2_ctx128": {
+      "triton_kernel_us": {
+        "median": 235.52,
+        "p95": 498.74
+      },
+      "ref_kernel_us": {
+        "median": 3617.26,
+        "p95": 5088.58
+      },
+      "speedup_kernel": 15.36
+    },
+    "bs2_ctx512": {
+      "triton_kernel_us": {
+        "median": 317.78,
+        "p95": 358.8
+      },
+      "ref_kernel_us": {
+        "median": 15543.1,
+        "p95": 19194.72
+      },
+      "speedup_kernel": 48.91
+    },
+    "bs2_ctx1024": {
+      "triton_kernel_us": {
+        "median": 539.26,
+        "p95": 587.32
+      },
+      "ref_kernel_us": {
+        "median": 28490.75,
+        "p95": 35346.02
+      },
+      "speedup_kernel": 52.83
+    },
+    "bs4_ctx16": {
+      "triton_kernel_us": {
+        "median": 104.45,
+        "p95": 157.9
+      },
+      "ref_kernel_us": {
+        "median": 1534.05,
+        "p95": 2501.73
+      },
+      "speedup_kernel": 14.69
+    },
+    "bs4_ctx128": {
+      "triton_kernel_us": {
+        "median": 151.5,
+        "p95": 235.52
+      },
+      "ref_kernel_us": {
+        "median": 7860.72,
+        "p95": 12745.04
+      },
+      "speedup_kernel": 51.88
+    },
+    "bs4_ctx512": {
+      "triton_kernel_us": {
+        "median": 328.66,
+        "p95": 378.98
+      },
+      "ref_kernel_us": {
+        "median": 32786.94,
+        "p95": 42897.92
+      },
+      "speedup_kernel": 99.76
+    },
+    "bs4_ctx1024": {
+      "triton_kernel_us": {
+        "median": 576.4,
+        "p95": 656.42
+      },
+      "ref_kernel_us": {
+        "median": 63458.3,
+        "p95": 76877.82
+      },
+      "speedup_kernel": 110.09
+    },
+    "bs8_ctx16": {
+      "triton_kernel_us": {
+        "median": 105.7,
+        "p95": 150.76
+      },
+      "ref_kernel_us": {
+        "median": 3494.64,
+        "p95": 4576.42
+      },
+      "speedup_kernel": 33.06
+    },
+    "bs8_ctx128": {
+      "triton_kernel_us": {
+        "median": 162.51,
+        "p95": 235.71
+      },
+      "ref_kernel_us": {
+        "median": 16674.5,
+        "p95": 20390.25
+      },
+      "speedup_kernel": 102.6
+    },
+    "bs8_ctx512": {
+      "triton_kernel_us": {
+        "median": 359.31,
+        "p95": 467.98
+      },
+      "ref_kernel_us": {
+        "median": 74363.9,
+        "p95": 96540.42
+      },
+      "speedup_kernel": 206.96
+    },
+    "bs8_ctx1024": {
+      "triton_kernel_us": {
+        "median": 880.13,
+        "p95": 1277.75
+      },
+      "ref_kernel_us": {
+        "median": 151698.94,
+        "p95": 170512.33
+      },
+      "speedup_kernel": 172.36
+    },
+    "bs16_ctx16": {
+      "triton_kernel_us": {
+        "median": 97.28,
+        "p95": 221.8
+      },
+      "ref_kernel_us": {
+        "median": 7444.08,
+        "p95": 10115.2
+      },
+      "speedup_kernel": 76.52
+    },
+    "bs16_ctx128": {
+      "triton_kernel_us": {
+        "median": 166.91,
+        "p95": 212.12
+      },
+      "ref_kernel_us": {
+        "median": 43281.41,
+        "p95": 53752.06
+      },
+      "speedup_kernel": 259.31
+    },
+    "bs16_ctx512": {
+      "triton_kernel_us": {
+        "median": 493.01,
+        "p95": 548.92
+      },
+      "ref_kernel_us": {
+        "median": 161267.72,
+        "p95": 194714.58
+      },
+      "speedup_kernel": 327.11
+    }
+  }
+}

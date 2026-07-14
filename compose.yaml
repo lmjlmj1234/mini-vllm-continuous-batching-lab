@@ -1,0 +1,14 @@
+services:
+  mini-vllm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mini-vllm-lab:latest
+    container_name: mini-vllm-lab
+    command: >
+      python examples/benchmark.py
+      --executor fake
+      --requests 32
+      --tokens 16
+    volumes:
+      - ./benchmark_results:/app/benchmark_results
