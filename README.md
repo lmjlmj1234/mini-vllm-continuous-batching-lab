@@ -357,6 +357,27 @@ For details, see [`docs/stage_breakdown_profiling.md`](docs/stage_breakdown_prof
 
 ---
 
+## PagedAttention Benchmarks
+
+Two benchmark scripts measure the PagedAttention decode kernel against a PyTorch SDPA baseline:
+
+| Script | Scope | Command |
+|--------|-------|---------|
+| `benchmark_paged_attention.py` | Isolated attention layer | `python -m benchmarks.benchmark_paged_attention` |
+| `benchmark_decode_e2e.py` | Full Qwen2.5-0.5B decode step | `python -m benchmarks.benchmark_decode_e2e` |
+
+Results are saved to `benchmark_results/` as JSON and CSV. See [`docs/benchmark_paged_attention.md`](docs/benchmark_paged_attention.md) for full details.
+
+```bash
+# Kernel benchmark (5 batch sizes × 7 context lengths)
+python -m benchmarks.benchmark_paged_attention
+
+# E2E decode benchmark (Qwen2.5-0.5B model)
+python -m benchmarks.benchmark_decode_e2e
+```
+
+---
+
 ## License / 许可证
 
 MIT

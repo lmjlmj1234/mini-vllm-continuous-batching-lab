@@ -43,9 +43,9 @@ class PagedExecutor:
         model_config = ConfigAdapter.from_pretrained(config.model_path)
         ConfigAdapter.validate_for_attention(model_config)
 
-        # Create attention backend
+        # Create attention backend (from config, not hardcoded)
         self._attention_backend = AttentionBackend.create(
-            model_config, backend="reference",
+            model_config, backend=config.attention_backend,
         )
 
         # Create model runner

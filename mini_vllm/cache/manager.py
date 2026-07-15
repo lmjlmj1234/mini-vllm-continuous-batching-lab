@@ -133,8 +133,9 @@ class BlockManager:
                 break
 
         self._shared_prefix_blocks[seq.seq_id] = shared_count
-        seq.block_table = table.get_block_ids()
 
+        # No mirror sync to seq.block_table — BlockManager is the single
+        # truth source.  Consumers use get_block_table().
         # First non-matching block will be allocated by ensure_block().
         # NOTE: we intentionally don't register new blocks here — they
         # will be registered when ensure_block() allocates them during
@@ -206,9 +207,8 @@ class BlockManager:
                 #立即注册到前缀缓存 — prompt 的块在写之前就知道内容了，可以提前注册。这样后续的请求就能命中这个块。
                 # Trace
                 self._trace_allocated.setdefault(seq.seq_id, []).append(pid)
-                #   记录分配追踪
-            seq.block_table = table.get_block_ids()
-            #返回该 token 位置对应的物理块 ID
+
+            # NOTE: mirror sync removed — see Phase 1.
         return table.get_physical_block(position)
 
     def is_block_shared(self, seq: Sequence, position: int) -> bool:
@@ -252,6 +252,51 @@ class BlockManager:
 
     def get_table(self, seq_id: str) -> BlockTable | None:
         return self._tables.get(seq_id)
+
+    def get_block_table(self, seq_id: str) -> List[int]:
+        """Read-only view of block IDs for a sequence.
+
+        Single truth source for logical-to-physical mapping.
+        ``Sequence.block_table`` has been removed — all consumers
+        must read from this method.
+        """
+        table = self._tables.get(seq_id)
+        if table is None:
+            return []
+        return table.get_block_ids()
+
+    def ensure_block_by_ids(
+        self, seq_id: str, position: int, prompt_len: int
+    ) -> int:
+        """Lightweight ``ensure_block`` using ids instead of a Sequence object.
+
+        Does NOT support prefix-cache matching (the full ``ensure_block``
+        with a Sequence object should be used for that).  With prefix cache
+        disabled, this is equivalent for test/simulation executors that
+        cannot hold Sequence objects.
+        """
+        logical_idx = position // self._block_size
+        table = self._tables.get(seq_id)
+
+        if table is None:
+            table = BlockTable(seq_id, self._block_size)
+            self._tables[seq_id] = table
+
+        while logical_idx >= table.num_blocks():
+            alloc_t0 = time.time()
+            pids = self._allocator.allocate(1)
+            if pids is None:
+                raise RuntimeError(
+                    f"OOM: no free block for seq={seq_id} position={position}"
+                )
+            pid = pids[0]
+            table.add_block(pid)
+            if self._profiler:
+                self._profiler.record_raw("kv_cache_allocation",
+                                          time.time() - alloc_t0)
+            self._trace_allocated.setdefault(seq_id, []).append(pid)
+
+        return table.get_physical_block(position)
 
     def get_shared_prefix_length(self, seq_id: str) -> int:
         """Return how many logical blocks are shared for this sequence."""

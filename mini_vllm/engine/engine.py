@@ -62,7 +62,7 @@ class LLMEngine:
             on_free=self._executor.release_block,
         )
         self._scheduler = Scheduler(self._config, self._block_manager, self._queue)
-        self._engine_core = EngineCore(self._scheduler, self._executor,
+        self._engine_core = EngineCore(self._scheduler, self._executor, block_manager=self._block_manager,
                                        profiler=self._profiler)
 
         self._outputs: Dict[str, str] = {}
@@ -72,6 +72,9 @@ class LLMEngine:
         if self._config.executor_type == "fake":
             from ..worker.fake_worker import FakeWorker
             return FakeWorker(self._config)
+        elif self._config.executor_type == "paged":
+            from ..worker.paged_worker import PagedWorker
+            return PagedWorker(self._config)
         else:
             from ..worker.qwen_worker import QwenWorker
             return QwenWorker(self._config)
@@ -235,7 +238,7 @@ class LLMEngine:
         block_size = self._config.block_size
         for sg in self._queue.running:
             for seq in sg.get_unfinished_seqs():
-                allocated_count = len(seq.block_table)
+                allocated_count = len(self._block_manager.get_block_table(seq.seq_id))
                 # On-demand: allocated blocks == ceil(kv_tokens_written / block_size)
                 # (actually == blocks needed for current data, no waste)
                 total_lifetime = len(seq.prompt_token_ids) + seq.sampling_params.max_tokens

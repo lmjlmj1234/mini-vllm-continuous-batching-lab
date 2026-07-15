@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -92,6 +92,18 @@ class BlockTable:
         if logical_idx < len(self._entries):
             return self._entries[logical_idx].is_shared
         return False
+
+    def export_block_table_tensor(self, max_blocks: int) -> "torch.Tensor":
+        """Export the block ID list as a padded ``torch.Tensor``.
+
+        Shape: ``[max_blocks]`` with ``-1`` sentinel padding for unused
+        trailing entries.  This is the format consumed by the GPU
+        PagedAttention kernel.
+        """
+        import torch
+        ids = self.get_block_ids()
+        padded = ids + [-1] * (max_blocks - len(ids))
+        return torch.tensor(padded[:max_blocks], dtype=torch.long)
 
     def dump_mapping(self) -> List[dict]:
         """ 导出完整的映射表，格式是 [{"logical": 0, "physical": 3, "shared": False}, ...]。调试/测试用 调试打印：BlockTable(request=req-001, blocks=[3, 7, 2])"""

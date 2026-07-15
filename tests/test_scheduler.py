@@ -103,7 +103,7 @@ class TestScheduler:
         assert len(result.scheduled_prefill_groups) == 1
         assert len(result.rejected_groups) == 0
         seq = result.scheduled_prefill_groups[0].seqs[0]
-        assert len(seq.block_table) == 0  # no blocks allocated at admission
+        assert len(mgr.get_block_table(seq.seq_id)) == 0  # no blocks allocated at admission
 
     def test_sequence_id_format(self) -> None:
         cfg = _make_config()

@@ -79,6 +79,40 @@ def _write_triton(key, value, pool, slot_mapping, layer=0):
         pool.key_caches[layer], pool.value_caches[layer],
         slot_mapping, pool.block_size,
     )
+    torch.cuda.synchronize()
+
+
+def _write_and_compare(key, value, pool, slot_mapping):
+    """Write to pool using both ref and triton and assert per-slot equality.
+
+    Only compares positions specified in ``slot_mapping`` (unwritten cache
+    positions contain uninitialized garbage from ``torch.empty()`` and may
+    differ between pools).
+    """
+    pool_ref = make_pool(
+        block_size=pool.block_size, num_blocks=pool.num_blocks,
+        num_kv_heads=pool.num_kv_heads, head_dim=pool.head_dim,
+    )
+    _write_ref(key, value, pool_ref, slot_mapping)
+    _write_triton(key, value, pool, slot_mapping)
+    torch.cuda.synchronize()
+
+    block_size = pool.block_size
+    for i, slot in enumerate(slot_mapping.tolist()):
+        if slot == -1:
+            continue
+        block_id = slot // block_size
+        offset = slot % block_size
+        triton_k = pool.key_caches[0][block_id, :, offset, :]
+        ref_k = pool_ref.key_caches[0][block_id, :, offset, :]
+        assert torch.equal(triton_k, ref_k), (
+            f"key_cache mismatch at slot={slot} (block={block_id}, offset={offset})"
+        )
+        triton_v = pool.value_caches[0][block_id, :, offset, :]
+        ref_v = pool_ref.value_caches[0][block_id, :, offset, :]
+        assert torch.equal(triton_v, ref_v), (
+            f"value_cache mismatch at slot={slot} (block={block_id}, offset={offset})"
+        )
 
 
 def _kv(shape, base=0.0):
@@ -125,90 +159,49 @@ def _decode_ref(query, pool, block_table, kv_len_after, block_size, num_kv_heads
 class TestCacheWrite:
     """triton_cache_write vs write_to_paged_cache — element-wise equality."""
 
+    @pytest.fixture(autouse=True)
+    def _sync_cuda(self):
+        torch.cuda.synchronize()
+        yield
+
     def test_single_token(self):
         """Single token write matches reference."""
         pool = make_pool()
         key = _kv((1, 2, 64), base=10.0)
         value = _kv((1, 2, 64), base=100.0)
         slot = torch.tensor([5], dtype=torch.long, device=DEVICE)
-
-        _write_ref(key, value, pool, slot)
-        ref_k = pool.key_caches[0].clone()
-        ref_v = pool.value_caches[0].clone()
-        pool.reset()
-
-        _write_triton(key, value, pool, slot)
-        assert torch.equal(pool.key_caches[0], ref_k)
-        assert torch.equal(pool.value_caches[0], ref_v)
+        _write_and_compare(key, value, pool, slot)
 
     def test_multi_token_noncontiguous(self):
         """Multiple tokens written to noncontiguous slots match reference."""
         pool = make_pool(block_size=16, num_blocks=32)
-        num_tokens = 5
-        key = _kv((num_tokens, 2, 64), base=10.0)
-        value = _kv((num_tokens, 2, 64), base=200.0)
+        key = _kv((5, 2, 64), base=10.0)
+        value = _kv((5, 2, 64), base=200.0)
         slots = torch.tensor([0, 17, 33, 50, 99], dtype=torch.long, device=DEVICE)
-
-        _write_ref(key, value, pool, slots)
-        ref_k = pool.key_caches[0].clone()
-        ref_v = pool.value_caches[0].clone()
-        pool.reset()
-
-        _write_triton(key, value, pool, slots)
-        assert torch.equal(pool.key_caches[0], ref_k)
-        assert torch.equal(pool.value_caches[0], ref_v)
+        _write_and_compare(key, value, pool, slots)
 
     def test_block_boundary(self):
         """Token at the last slot of a block writes correctly."""
         pool = make_pool(block_size=4, num_blocks=8)
         key = _kv((2, 2, 64), base=10.0)
         value = _kv((2, 2, 64), base=300.0)
-        # Block 1 last slot = 4*2 - 1 = 7, Block 2 first slot = 8
         slots = torch.tensor([7, 8], dtype=torch.long, device=DEVICE)
-
-        _write_ref(key, value, pool, slots)
-        ref_k = pool.key_caches[0].clone()
-        ref_v = pool.value_caches[0].clone()
-        pool.reset()
-
-        _write_triton(key, value, pool, slots)
-        assert torch.equal(pool.key_caches[0], ref_k)
-        assert torch.equal(pool.value_caches[0], ref_v)
+        _write_and_compare(key, value, pool, slots)
 
     def test_slot_negative_one_skips(self):
         """slot=-1 skips write; other slots still written correctly."""
         pool = make_pool()
         key = _kv((3, 2, 64), base=10.0)
         value = _kv((3, 2, 64), base=400.0)
-        # Slot -1 should skip, slots 0 and 15 written
         slots = torch.tensor([0, -1, 15], dtype=torch.long, device=DEVICE)
-        # Pre-fill slot 0 with sentinel to verify -1 doesn't overwrite
-        sentinel = _kv((1, 2, 64), base=999.0)
-        _write_triton(sentinel, sentinel, pool, torch.tensor([0], dtype=torch.long, device=DEVICE))
-        ref_k_before = pool.key_caches[0, :, 0, :].clone()
-        ref_v_before = pool.value_caches[0, :, 0, :].clone()
-
-        _write_ref(key, value, pool, slots)
-        ref_k = pool.key_caches[0].clone()
-        ref_v = pool.value_caches[0].clone()
-        # Restore sentinel at slot 0 so Triton also sees it
-        pool.key_caches[0, :, 0, :] = ref_k_before
-        pool.value_caches[0, :, 0, :] = ref_v_before
-
-        _write_triton(key, value, pool, slots)
-        # Slot 0 should still have sentinel (key[0] overwrites it in both)
-        # Actually sentinel was written to slot 0, then both ref and triton
-        # write key[0] to slot 0 which overwrites the sentinel. That's correct.
-        # Verify all slots including the skipped one match ref.
-        assert torch.equal(pool.key_caches[0], ref_k)
-        assert torch.equal(pool.value_caches[0], ref_v)
+        _write_and_compare(key, value, pool, slots)
 
     def test_duplicate_slot_raises(self):
         """Duplicate non--1 slots raise AssertionError."""
         pool = make_pool()
         key = _kv((2, 2, 64), base=10.0)
         value = _kv((2, 2, 64), base=500.0)
-        slots = torch.tensor([5, 5], dtype=torch.long, device=DEVICE)  # duplicate!
+        slots = torch.tensor([5, 5], dtype=torch.long, device=DEVICE)
 
         with pytest.raises(AssertionError, match="Duplicate"):
             _write_triton(key, value, pool, slots)
@@ -221,6 +214,11 @@ class TestCacheWrite:
 
 class TestDecodeAttention:
     """triton_decode_attention vs gather+sdpa reference."""
+
+    @pytest.fixture(autouse=True)
+    def _sync_cuda(self):
+        torch.cuda.synchronize()
+        yield
 
     @pytest.fixture(autouse=True)
     def _setup(self):
@@ -237,28 +235,38 @@ class TestDecodeAttention:
         )
 
     def _write_kv_to_cache(self, num_tokens, base=10.0, slot_offset=0):
-        """Write KV tokens into cache and return kv_len."""
+        """Write KV tokens into cache and return block table entry.
+
+        Tokens fill slots ``[slot_offset, slot_offset + num_tokens)``.
+        The returned block table lists the physical blocks covering those
+        slots, suitable for decode attention.
+        """
         key = _kv((num_tokens, self.num_kv_heads, self.head_dim), base=base)
         value = _kv((num_tokens, self.num_kv_heads, self.head_dim), base=base + 1000.0)
         slots = torch.arange(slot_offset, slot_offset + num_tokens, dtype=torch.long, device=DEVICE)
         _write_triton(key, value, self.pool, slots)
-        return num_tokens
+        # Determine physical blocks from slot range
+        start_block = slot_offset // self.block_size
+        end_block = (slot_offset + num_tokens - 1) // self.block_size
+        block_ids = list(range(start_block, end_block + 1))
+        return torch.tensor(block_ids, dtype=torch.long, device=DEVICE)
 
-    def _make_block_table(self, seq_idx, kv_len):
-        """Build a block_table row: maps logical block -> physical block."""
-        num_blocks = (kv_len + self.block_size - 1) // self.block_size
-        # Assign consecutive physical blocks starting from seq_idx * 16
-        base_block = seq_idx * 16
-        row = list(range(base_block, base_block + num_blocks))
-        return torch.tensor(row, dtype=torch.long, device=DEVICE)
+    def _make_block_table(self, block_ids_list):
+        """Build a 1-row block table from a list of physical block IDs.
+
+        Pads with -1 to ``max_blocks`` (set per-test).
+        """
+        return block_ids_list  # caller wraps with unsqueeze(0) and pads
+
+    # --- individual tests ---
 
     def test_single_sequence(self):
         """Single decode sequence matches reference."""
-        seq_kv_len = 7
-        kv_len = self._write_kv_to_cache(seq_kv_len, base=10.0)
+        seq_len = 7
+        bt = self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
+        block_table = bt.unsqueeze(0)
+        kv_len_after = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
         query = _kv((1, self.num_q_heads, self.head_dim), base=50.0)
-        block_table = self._make_block_table(0, kv_len).unsqueeze(0)
-        kv_len_after = torch.tensor([kv_len], dtype=torch.int32, device=DEVICE)
 
         ref_out = _decode_ref(query, self.pool, block_table, kv_len_after,
                               self.block_size, self.num_kv_heads)
@@ -266,50 +274,21 @@ class TestDecodeAttention:
             query, self.pool.key_caches[0], self.pool.value_caches[0],
             block_table, kv_len_after, self.block_size,
         )
-
         assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
     def test_multi_sequence(self):
         """Multiple decode sequences produce correct outputs."""
-        seq0_len = self._write_kv_to_cache(10, base=10.0, slot_offset=0)
-        seq1_len = self._write_kv_to_cache(15, base=200.0, slot_offset=20)
-        # Re-write seq1 KV to avoid sentinel
-        self._write_kv_to_cache(15, base=200.0, slot_offset=20)
-        total_decode = 2
+        seq0_len = 10
+        bt0 = self._write_kv_to_cache(seq0_len, base=10.0, slot_offset=0)
+        seq1_len = 15
+        bt1 = self._write_kv_to_cache(seq1_len, base=200.0, slot_offset=20)
 
-        query = _kv((total_decode, self.num_q_heads, self.head_dim), base=50.0)
-        bt0 = self._make_block_table(0, seq0_len)
-        bt1 = self._make_block_table(1, seq1_len)
-        max_blocks = max(bt0.shape[0], bt1.shape[0])
-        block_table = torch.zeros(total_decode, max_blocks, dtype=torch.long, device=DEVICE) - 1
-        block_table[0, :bt0.shape[0]] = bt0
-        block_table[1, :bt1.shape[0]] = bt1
-
-        kv_len_after = torch.tensor([seq0_len, seq1_len], dtype=torch.int32, device=DEVICE)
-
-        ref_out = _decode_ref(query, self.pool, block_table, kv_len_after,
-                              self.block_size, self.num_kv_heads)
-        triton_out = triton_decode_attention(
-            query, self.pool.key_caches[0], self.pool.value_caches[0],
-            block_table, kv_len_after, self.block_size,
-        )
-
-        assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
-
-    def test_different_lengths(self):
-        """Sequences with different KV lengths produce correct outputs."""
-        # Write sequence 0 (3 tokens) and sequence 1 (23 tokens)
-        seq0_len = self._write_kv_to_cache(3, base=10.0, slot_offset=0)
-        seq1_len = self._write_kv_to_cache(23, base=300.0, slot_offset=30)
-        query = _kv((2, self.num_q_heads, self.head_dim), base=50.0)
-
-        bt0 = self._make_block_table(2, seq0_len)
-        bt1 = self._make_block_table(3, seq1_len)
         max_blocks = max(bt0.shape[0], bt1.shape[0])
         block_table = torch.zeros(2, max_blocks, dtype=torch.long, device=DEVICE) - 1
         block_table[0, :bt0.shape[0]] = bt0
         block_table[1, :bt1.shape[0]] = bt1
 
+        query = _kv((2, self.num_q_heads, self.head_dim), base=50.0)
         kv_len_after = torch.tensor([seq0_len, seq1_len], dtype=torch.int32, device=DEVICE)
 
         ref_out = _decode_ref(query, self.pool, block_table, kv_len_after,
@@ -318,17 +297,22 @@ class TestDecodeAttention:
             query, self.pool.key_caches[0], self.pool.value_caches[0],
             block_table, kv_len_after, self.block_size,
         )
-
         assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
-    def test_partial_last_block(self):
-        """KV length not aligned to block_size works correctly."""
-        # 16 + 3 = 19 tokens (1 full block + partial)
-        seq_len = self.block_size + 3
-        self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
-        query = _kv((1, self.num_q_heads, self.head_dim), base=50.0)
-        block_table = self._make_block_table(5, seq_len).unsqueeze(0)
-        kv_len_after = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
+    def test_different_lengths(self):
+        """Sequences with different KV lengths produce correct outputs."""
+        seq0_len = 3
+        bt0 = self._write_kv_to_cache(seq0_len, base=10.0, slot_offset=0)
+        seq1_len = 23
+        bt1 = self._write_kv_to_cache(seq1_len, base=300.0, slot_offset=30)
+
+        max_blocks = max(bt0.shape[0], bt1.shape[0])
+        block_table = torch.zeros(2, max_blocks, dtype=torch.long, device=DEVICE) - 1
+        block_table[0, :bt0.shape[0]] = bt0
+        block_table[1, :bt1.shape[0]] = bt1
+
+        query = _kv((2, self.num_q_heads, self.head_dim), base=50.0)
+        kv_len_after = torch.tensor([seq0_len, seq1_len], dtype=torch.int32, device=DEVICE)
 
         ref_out = _decode_ref(query, self.pool, block_table, kv_len_after,
                               self.block_size, self.num_kv_heads)
@@ -336,16 +320,31 @@ class TestDecodeAttention:
             query, self.pool.key_caches[0], self.pool.value_caches[0],
             block_table, kv_len_after, self.block_size,
         )
+        assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
+    def test_partial_last_block(self):
+        """KV length not aligned to block_size works correctly."""
+        seq_len = self.block_size + 3
+        bt = self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
+        block_table = bt.unsqueeze(0)
+        kv_len_after = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
+        query = _kv((1, self.num_q_heads, self.head_dim), base=50.0)
+
+        ref_out = _decode_ref(query, self.pool, block_table, kv_len_after,
+                              self.block_size, self.num_kv_heads)
+        triton_out = triton_decode_attention(
+            query, self.pool.key_caches[0], self.pool.value_caches[0],
+            block_table, kv_len_after, self.block_size,
+        )
         assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
     def test_multiple_full_blocks(self):
         """Multiple full blocks (40 tokens = 2.5 blocks) work correctly."""
         seq_len = 40
-        self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
-        query = _kv((1, self.num_q_heads, self.head_dim), base=50.0)
-        block_table = self._make_block_table(6, seq_len).unsqueeze(0)
+        bt = self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
+        block_table = bt.unsqueeze(0)
         kv_len_after = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
+        query = _kv((1, self.num_q_heads, self.head_dim), base=50.0)
 
         ref_out = _decode_ref(query, self.pool, block_table, kv_len_after,
                               self.block_size, self.num_kv_heads)
@@ -353,13 +352,12 @@ class TestDecodeAttention:
             query, self.pool.key_caches[0], self.pool.value_caches[0],
             block_table, kv_len_after, self.block_size,
         )
-
         assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
     def test_noncontiguous_block_table(self):
         """Noncontiguous physical blocks (block_table has gaps) work."""
-        # Manually write to scattered blocks: block 10 and block 50
         pool = make_pool(block_size=16, num_blocks=64, num_kv_heads=2, head_dim=64)
+        # Write to block 10 (slots 160-175) and block 50 (slots 800-803)
         key0 = _kv((16, 2, 64), base=10.0)
         val0 = _kv((16, 2, 64), base=1000.0)
         slots0 = torch.arange(160, 160 + 16, dtype=torch.long, device=DEVICE)
@@ -372,17 +370,14 @@ class TestDecodeAttention:
 
         kv_len = 19
         query = _kv((1, 4, 64), base=99.0)
-        # Sequentially map logical blocks 0->10, 1->50
         block_table = torch.tensor([[10, 50]], dtype=torch.long, device=DEVICE)
         kv_len_after = torch.tensor([kv_len], dtype=torch.int32, device=DEVICE)
 
-        ref_out = _decode_ref(query, pool, block_table, kv_len_after,
-                              16, 2)
+        ref_out = _decode_ref(query, pool, block_table, kv_len_after, 16, 2)
         triton_out = triton_decode_attention(
             query, pool.key_caches[0], pool.value_caches[0],
             block_table, kv_len_after, 16,
         )
-
         assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
     def test_kv_len_zero_raises(self):
@@ -401,9 +396,7 @@ class TestDecodeAttention:
     def test_padding_blocks_ignored(self):
         """-1 entries in block_table are ignored (padding after last block)."""
         seq_len = 5
-        self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
-        # Pad block_table with extra -1 columns
-        bt = self._make_block_table(7, seq_len)
+        bt = self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
         padded = torch.cat([bt, torch.tensor([-1, -1], dtype=torch.long, device=DEVICE)])
         block_table = padded.unsqueeze(0)
         kv_len_after = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
@@ -415,16 +408,15 @@ class TestDecodeAttention:
             query, self.pool.key_caches[0], self.pool.value_caches[0],
             block_table, kv_len_after, self.block_size,
         )
-
         assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
     def test_long_sequence_large_cache(self):
         """Longer sequence (3+ blocks) doesn't overflow or drift."""
-        seq_len = 50  # 3 full blocks + 2 partial
-        self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
-        query = _kv((1, self.num_q_heads, self.head_dim), base=50.0)
-        block_table = self._make_block_table(8, seq_len).unsqueeze(0)
+        seq_len = 50
+        bt = self._write_kv_to_cache(seq_len, base=10.0, slot_offset=0)
+        block_table = bt.unsqueeze(0)
         kv_len_after = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
+        query = _kv((1, self.num_q_heads, self.head_dim), base=50.0)
 
         ref_out = _decode_ref(query, self.pool, block_table, kv_len_after,
                               self.block_size, self.num_kv_heads)
@@ -432,7 +424,6 @@ class TestDecodeAttention:
             query, self.pool.key_caches[0], self.pool.value_caches[0],
             block_table, kv_len_after, self.block_size,
         )
-
         assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
 

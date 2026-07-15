@@ -151,7 +151,7 @@ class TestBlockManagerPrefixCache:
         seq = _make_seq("s0", prompt_len=8)
         mgr.allocate_for_seq(seq)
 
-        assert seq.block_table == []  # no blocks allocated
+        assert mgr.get_block_table(seq.seq_id) == []  # no blocks allocated
         assert mgr.get_shared_prefix_length("s0") == 0
 
     def test_ensure_block_registers_in_cache(self) -> None:
@@ -183,7 +183,7 @@ class TestBlockManagerPrefixCache:
         mgr.allocate_for_seq(seq_b)
 
         assert mgr.get_shared_prefix_length("sB") == 2  # both blocks shared
-        assert seq_b.block_table == seq_a.block_table  # same PIDs
+        assert mgr.get_block_table(seq_b.seq_id) == mgr.get_block_table(seq_a.seq_id)  # same PIDs
 
         # Both blocks should be shared (check BlockTable entries)
         tbl_b = mgr.get_table("sB")
@@ -259,8 +259,8 @@ class TestBlockManagerPrefixCache:
 
         # Block 1 should be allocated on-demand
         mgr.ensure_block(seq_b, 4)
-        assert seq_b.block_table is not None
-        assert len(seq_b.block_table) == 2  # 2 blocks total
+        assert mgr.get_block_table(seq_b.seq_id) is not None
+        assert len(mgr.get_block_table(seq_b.seq_id)) == 2  # 2 blocks total
 
     def test_is_block_shared(self) -> None:
         """is_block_shared correctly identifies shared vs owned blocks."""
@@ -335,7 +335,7 @@ class TestBlockManagerPrefixCache:
 
         # seq_b can still read from block 0
         pid = mgr.ensure_block(seq_b, 0)
-        assert pid == seq_a.block_table[0]  # same physical block
+        assert pid == mgr.get_block_table(seq_b.seq_id)[0]  # same physical block
 
 
 # ======================================================================

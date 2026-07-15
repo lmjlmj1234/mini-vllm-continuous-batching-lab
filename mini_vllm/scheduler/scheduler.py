@@ -32,6 +32,49 @@ class Scheduler:
         self._config = config
         self._block_manager = block_manager
         self._queue = queue
+        self._trace_enabled: bool = False
+        self._trace_records: List[dict] = []
+        self._trace_step_count: int = 0
+
+    def enable_trace(self, enabled: bool = True) -> None:
+        """Enable or disable per-step scheduler trace."""
+        self._trace_enabled = enabled
+
+    def get_and_clear_trace(self) -> List[dict]:
+        """Return all trace records and clear the buffer."""
+        records = list(self._trace_records)
+        self._trace_records.clear()
+        return records
+
+    def _record_trace(self, result: ScheduleResult) -> None:
+        """Record a step trace entry (no-op if trace is disabled)."""
+        if not self._trace_enabled:
+            return
+        self._trace_step_count += 1
+        waiting_ids = [sg.request_id for sg in self._queue._waiting.values()]
+        running_ids = [sg.request_id for sg in self._queue._running.values()]
+        finished_ids = [sg.request_id for sg in self._queue._finished.values()]
+        admitted_ids = [sg.request_id for sg in result.scheduled_prefill_groups]
+        newly_finished_ids = [sg.request_id for sg in result.finished_groups]
+
+        record = {
+            "timestamp": time.time(),
+            "step_id": self._trace_step_count,
+            "waiting_requests": len(waiting_ids),
+            "running_requests": len(running_ids),
+            "finished_requests": len(finished_ids),
+            "newly_admitted_requests": len(admitted_ids),
+            "newly_finished_requests": len(newly_finished_ids),
+            "scheduled_prefill_tokens": result.num_prefill_tokens,
+            "scheduled_decode_tokens": result.num_decode_tokens,
+            "effective_batch_size": len(result.scheduled_decode_groups) + len(result.scheduled_prefill_groups),
+            "waiting_request_ids": waiting_ids,
+            "running_request_ids": running_ids,
+            "finished_request_ids": finished_ids,
+            "admitted_request_ids": admitted_ids,
+            "finished_request_ids_this_step": newly_finished_ids,
+        }
+        self._trace_records.append(record)
 
     def schedule(self) -> ScheduleResult:
         """Run one scheduling iteration — called once per engine step."""
@@ -125,58 +168,66 @@ class Scheduler:
         # ------------------------------------------------------------------
         # Phase 5: Admit new waiting groups (with prefix cache awareness)
         # ------------------------------------------------------------------
-        for sg in list(self._queue.waiting):
-            #遍历所有等待中的新请求。用 list() 拷贝是为了在遍历时不会因为 mark_running 修改字典而出问题
-            if remaining_seq_budget <= 0:# 序列预算用完了 → 跳过。
-                result.ignored_groups.append(sg)
-                result.ignored_reasons[sg.request_id] = "MAX_NUM_SEQS_LIMIT"
-                continue
-
-            prompt_len = len(sg.prompt_token_ids) # 拿到这个请求的 prompt 长度
-
-            # Read-only probe: how many prompt tokens are already cached?
-            probe = self._block_manager.probe_prefix_cache(sg.prompt_token_ids) # 前缀缓存探测 — 问 block manager：这个 prompt 的前面多少 tokens 已经在 KV cache 里了？（相同前缀复用缓存，不用重新计算）
-            uncached_tokens = prompt_len - probe.cached_token_count #真正需要计算的 token 数量 = 总长度 - 已缓存的部分
-
-            if self._config.chunked_prefill_enabled:
-                this_chunk = min(uncached_tokens, chunk_size)
-            else:
-                this_chunk = uncached_tokens
-            # 分块模式：只取一个 chunk。不分块模式：全量 prefill
-            if this_chunk > prefill_budget:
-                # Rejection: the uncached portion alone is too long to fit
-                if uncached_tokens > self._config.max_num_batched_tokens:
-                    self._queue.mark_rejected(sg)
-                    result.rejected_groups.append(sg)
-                else:
+        # Static batch mode: only admit new groups when no groups are running.
+        can_admit = not self._config.static_batch_mode or (
+            self._config.static_batch_mode and len(decode_groups) == 0
+            and len(prefill_continue_groups) == 0
+        )
+        if can_admit:
+            for sg in list(self._queue.waiting):
+                #遍历所有等待中的新请求。用 list() 拷贝是为了在遍历时不会因为 mark_running 修改字典而出问题
+                if remaining_seq_budget <= 0:# 序列预算用完了 → 跳过。
                     result.ignored_groups.append(sg)
-                    result.ignored_reasons[sg.request_id] = "NO_TOKEN_BUDGET"
-                continue
-                #  装不下怎么办？ 有两种情况：
-                #- 整个 prompt 本身就超出单步处理上限 → 拒绝这个请求（拒绝）
-                #- 只是这步预算不够 → 先跳过，下步再说（忽略）
+                    result.ignored_reasons[sg.request_id] = "MAX_NUM_SEQS_LIMIT"
+                    continue
 
-            seq_id = f"{sg.request_id}-seq-0" # 为该请求创建第 0 号 Sequence 对象
-            seq = sg.create_sequence(seq_id)
-            # allocate_for_seq does the real attach: increment_ref, add_shared_block, etc.
-            self._block_manager.allocate_for_seq(seq) #为这个序列分配 KV cache 块
+                prompt_len = len(sg.prompt_token_ids) # 拿到这个请求的 prompt 长度
 
-            seq.status = Status.PREFILL
-            # Prefill cursor starts after the cached prefix (not at 0).
-            # The executor's prefill loop starts from this position and only
-            # processes uncached tokens.
-            seq.prefill_cursor = probe.cached_token_count # prefill 游标从已缓存的位置开始 — 已缓存的部分不用再计算。没命中缓存就是 0
+                # Read-only probe: how many prompt tokens are already cached?
+                probe = self._block_manager.probe_prefix_cache(sg.prompt_token_ids) # 前缀缓存探测
+                uncached_tokens = prompt_len - probe.cached_token_count
 
-            self._queue.mark_running(sg) #从 waiting 池移到 running 池
-            result.scheduled_prefill_groups.append(sg)
-            #记录调度结果，更新各种计数
-            prefill_budget -= this_chunk
-            remaining_token_budget -= this_chunk
-            remaining_seq_budget -= 1
-            num_prefill_tokens += this_chunk
-            result.cached_token_count += probe.cached_token_count
-            result.num_uncached_prefill_tokens += this_chunk
-            result.matched_block_count += probe.matched_block_count
+                if self._config.chunked_prefill_enabled:
+                    this_chunk = min(uncached_tokens, chunk_size)
+                else:
+                    this_chunk = uncached_tokens
+
+                # Edge case: all prompt tokens are prefix-cached (this_chunk=0).
+                # Process the last chunk of the prompt anyway to generate
+                # first-token logits via the model forward pass.
+                if this_chunk == 0 and uncached_tokens == 0:
+                    this_chunk = min(chunk_size, prompt_len)
+
+                if this_chunk > prefill_budget:
+                    if uncached_tokens > self._config.max_num_batched_tokens:
+                        self._queue.mark_rejected(sg)
+                        result.rejected_groups.append(sg)
+                    else:
+                        result.ignored_groups.append(sg)
+                        result.ignored_reasons[sg.request_id] = "NO_TOKEN_BUDGET"
+                    continue
+
+                seq_id = f"{sg.request_id}-seq-0"
+                seq = sg.create_sequence(seq_id)
+                self._block_manager.allocate_for_seq(seq)
+
+                seq.status = Status.PREFILL
+                # When all tokens are cached, start prefill from the end
+                # so the executor processes fresh tokens for logits.
+                if uncached_tokens == 0 and probe.cached_token_count == prompt_len:
+                    seq.prefill_cursor = prompt_len - this_chunk
+                else:
+                    seq.prefill_cursor = probe.cached_token_count
+
+                self._queue.mark_running(sg)
+                result.scheduled_prefill_groups.append(sg)
+                prefill_budget -= this_chunk
+                remaining_token_budget -= this_chunk
+                remaining_seq_budget -= 1
+                num_prefill_tokens += this_chunk
+                result.cached_token_count += probe.cached_token_count
+                result.num_uncached_prefill_tokens += this_chunk
+                result.matched_block_count += probe.matched_block_count
 
         # ------------------------------------------------------------------
         # Phase 6: Token counts & debug_reason
@@ -190,9 +241,10 @@ class Scheduler:
         result.num_batched_tokens = num_prefill_tokens + num_decode
         result.token_budget_remaining = remaining_token_budget
         result.debug_reason = self._build_debug_reason(result)
-        # 填满调度结果的各种统计字段，最后生成一句 debug 字符串方便日志打印
 
-        # 返回调度结果给引擎。引擎拿到这个 result，就知道这一步要执行哪些 prefill、哪些 decode
+        # Record trace (no-op if disabled)
+        self._record_trace(result)
+
         return result
 
     # 辅助方法

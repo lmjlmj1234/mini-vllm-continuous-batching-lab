@@ -93,7 +93,7 @@ class TestBlockManager:
         seq = _make_seq()
         mgr.allocate_for_seq(seq)
         # No blocks allocated at admission
-        assert seq.block_table == []
+        assert mgr.get_block_table(seq.seq_id) == []
         assert alloc.num_free_blocks == 8
         # Block table is registered internally
         assert mgr.get_table(seq.seq_id) is not None
@@ -106,24 +106,24 @@ class TestBlockManager:
 
         seq = _make_seq()
         mgr.allocate_for_seq(seq)
-        assert len(seq.block_table) == 0
+        assert len(mgr.get_block_table(seq.seq_id)) == 0
         assert alloc.num_free_blocks == 8
 
         # First token: position 0 → allocate block 0
         pid = mgr.ensure_block(seq, 0)
         assert pid == 0
-        assert len(seq.block_table) == 1
+        assert len(mgr.get_block_table(seq.seq_id)) == 1
         assert alloc.num_free_blocks == 7
 
         # Same block position 1-3: no new alloc
         pid = mgr.ensure_block(seq, 3)
         assert pid == 0
-        assert len(seq.block_table) == 1
+        assert len(mgr.get_block_table(seq.seq_id)) == 1
 
         # Token position 4 → new logical block → allocate block 1
         pid = mgr.ensure_block(seq, 4)
         assert pid == 1
-        assert len(seq.block_table) == 2
+        assert len(mgr.get_block_table(seq.seq_id)) == 2
         assert alloc.num_free_blocks == 6
 
     def test_free(self) -> None:

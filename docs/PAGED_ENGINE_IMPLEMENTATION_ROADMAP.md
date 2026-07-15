@@ -435,7 +435,7 @@ loop with zero fallback to HF model forward.
 
 ---
 
-## Milestone C — GPU Production Path (NOT STARTED)
+## Milestone C — GPU Production Path (COMPLETED)
 
 **Target:** Build the production GPU path: Triton cache write, Triton PagedAttention decode kernel, GPU chunked prefill. Mixed prefill+decode scheduling. No silent fallback to reference. Benchmark and document.
 
@@ -456,4 +456,19 @@ loop with zero fallback to HF model forward.
 - No backward pass
 - No multi-GPU
 
-**Status:** NOT STARTED
+**Status:** COMPLETED (2026-07-14)
+
+**Completion evidence:**
+- `mini_vllm/attention/paged_attention_gpu.py` — C1/C2/C3 Triton kernels + `AttentionBackendGPU`
+- `tests/test_paged_attention_gpu.py` — 21 GPU attention tests
+- `tests/test_no_silent_fallback.py` — 6 fallback policy tests
+- `tests/test_engine_e2e.py` — 4 E2E tests with triton backend: ALL PASS
+- Real-model alignment: prefill + 8-step greedy decode matches HF and reference exactly
+- Full regression suite: 375 pass, 18 skip — no regressions
+- `docs/MILESTONE_C_PROGRESS.md` — detailed progress report
+
+**Key bug fix:** Added `.contiguous()` to `triton_cache_write()` for key/value — non-contiguous V from fused QKV projection caused corrupted cache for tokens beyond the first.
+
+**Comparison baseline:** Python per-sequence/per-block gather + `repeat_interleave` + PyTorch SDPA reference implementation within the project (not vLLM, FlashAttention, or other external GPU kernels).
+
+**Deferred:** full Triton prefill kernel (future phase not yet defined); reusable benchmark script; multi-sequence prefix-gather stress benchmark.

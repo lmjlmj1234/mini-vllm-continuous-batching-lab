@@ -1,0 +1,7 @@
+batch_size,ctx_length,block_size,num_kv_blocks,num_q_heads,num_kv_heads,head_dim,dtype,status,ref_latency_us,triton_latency_us,speedup,passed,max_abs_error,max_rel_error,reason
+1,16,16,1,14,2,64,torch.float16,ok,195.14,83.73,2.33,True,0.0,0.0,
+1,128,16,8,14,2,64,torch.float16,ok,807.08,119.71,6.74,True,0.0,0.0,
+1,512,16,32,14,2,64,torch.float16,ok,1939.8,318.5,6.09,True,0.0,0.0,
+4,16,16,1,14,2,64,torch.float16,ok,744.39,78.1,9.53,True,0.0,0.0,
+4,128,16,8,14,2,64,torch.float16,ok,2161.66,133.04,16.25,True,0.0,0.0,
+4,512,16,32,14,2,64,torch.float16,ok,11232.39,1732.95,6.48,False,5.0,0.006127,

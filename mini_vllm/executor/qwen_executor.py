@@ -25,59 +25,51 @@ if TYPE_CHECKING:
 
 
 _HF_CACHE: Optional[str] = None
-# 可选的 HF_HOME 覆盖路径
-# 可以在导入本模块之前设置，指定 HuggingFace 模型下载目录
 
 
-def _get_model_and_tokenizer() -> Tuple[Any, Any]:
-    """Lazy-load Qwen2-0.5B from HuggingFace.
-    # 从 HuggingFace 懒加载 Qwen2-0.5B 模型和 tokenizer
-    #
-    # 引入放在函数内部，这样即使没有 torch/transformers 也能导入 mini_vllm
-    # （只有走 QwenExecutor 路径才需要它们）
+def _get_model_and_tokenizer(model_path: str = "") -> Tuple[Any, Any]:
+    """Lazy-load Qwen2-0.5B from HuggingFace or a local path.
 
     Import is inside the function so ``mini_vllm`` can be imported without
     torch/transformers installed (only the QwenExecutor path needs them).
     """
     import os
-    # os.environ 用于设置 HF_HOME
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    # HuggingFace 的模型和 tokenizer 加载工具
-    # 放在函数内部 = 懒导入，只有真正调这个函数时才 import
 
     if _HF_CACHE is not None:
-        # 如果设置了 HF 缓存目录，就覆盖环境变量
         os.environ["HF_HOME"] = _HF_CACHE
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # 优先用 GPU，没有 GPU 就回退到 CPU
-
     dtype = torch.float16 if device == "cuda" else torch.float32
-    # GPU 用 float16 省显存，CPU 用 float32（CPU 上 float16 通常没加速）
 
-    model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen2-0.5B",
-        # 加载 Qwen2 0.5B 参数量的模型
-        torch_dtype=dtype,
-        device_map=device,
-        # 自动分配到设备（GPU 或 CPU）
-        use_cache=True,
-        # 启用 KV cache（transformers 原生）
-    )
+    if model_path:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            local_files_only=True,
+            torch_dtype=dtype,
+            device_map=device,
+            use_cache=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            local_files_only=True,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            "Qwen/Qwen2-0.5B",
+            torch_dtype=dtype,
+            device_map=device,
+            use_cache=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B")
+
     model.eval()
-    # 切到评估模式（关闭 dropout/BN 等训练专用层）
-
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B")
-    # 加载对应的 tokenizer
 
     if tokenizer.pad_token_id is None:
-        # 如果 tokenizer 没有 pad_token，用 eos_token 代替
-        # 这是常见处理，因为 Qwen 没有专门定义 pad_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     return model, tokenizer
-    # 返回 (model, tokenizer) 元组
 
 
 class QwenExecutor:
@@ -104,15 +96,11 @@ class QwenExecutor:
     """
 
     def __init__(self, config: Config, block_manager: BlockManager | None = None) -> None:
-        # 构造器
         self._config = config
-        # 保存配置
-
         self._block_manager = block_manager
-        # 保存 BlockManager 引用
 
-        self._model, self._tokenizer = _get_model_and_tokenizer()
-        # 加载 Qwen2-0.5B 模型和 tokenizer
+        model_path = getattr(config, 'model_path', '')
+        self._model, self._tokenizer = _get_model_and_tokenizer(model_path)
 
         self._model_config = self._model.config
         # 保存模型配置（hidden_size, num_layers 等）
@@ -187,12 +175,18 @@ class QwenExecutor:
             start = seq.prefill_cursor
             # 本次处理的结束位置 = min(prompt 末尾, start + chunk_size)
             end = min(len(seq.prompt_token_ids), start + chunk_size)
+            # Fallback: when cursor is at or past prompt end (e.g. full
+            # prefix-cache hit), process the last chunk of the prompt
+            # to generate first-token logits.
+            if end <= start:
+                end = len(seq.prompt_token_ids)
+                start = max(0, end - chunk_size)
             # 取出这部分 token ID
             token_ids = seq.prompt_token_ids[start:end]
 
             # 转为 PyTorch 张量，送到模型所在设备
             # shape = [1, chunk_size]（batch_size=1, seq_len=chunk_size）
-            input_ids = torch.tensor([token_ids], device=device)
+            input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
 
             # 获取该序列已有的 past_key_values（如果是第一块 prefill，则为 None）
             past_kv = self._seq_kv.get(seq.seq_id)
@@ -253,7 +247,7 @@ class QwenExecutor:
             # 解码时输入的是上一个已生成的 token
             prev_token = seq.output_token_ids[-1]
             # shape = [1, 1]（batch_size=1, 一个 token）
-            input_ids = torch.tensor([[prev_token]], device=device)
+            input_ids = torch.tensor([[prev_token]], dtype=torch.long, device=device)
 
             # 获取该序列的过去 KV cache
             past_kv = self._seq_kv.get(seq.seq_id)
@@ -277,8 +271,9 @@ class QwenExecutor:
             next_token = self._sample_token(logits)
 
             # 在 BlockManager 中追踪新 token 的 KV 写入
-            # 新 token 的位置 = prompt 长度 + 已经输出的 token 数
-            new_pos = len(seq.prompt_token_ids) + len(seq.output_token_ids)
+            # 新 KV 写入的位置 = prompt_len + num_generated - 1 (cached_len_before)
+            # 刚采样的 next_token 将在这个位置写入 KV cache（由 transformers 管理）
+            new_pos = len(seq.prompt_token_ids) + seq.num_generated_tokens - 1
             if self._block_manager is not None:
                 # 确保该位置有物理块（按需分配）
                 block_id = self._block_manager.ensure_block(seq, new_pos)

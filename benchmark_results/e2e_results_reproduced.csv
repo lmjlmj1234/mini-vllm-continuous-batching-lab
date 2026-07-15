@@ -1,0 +1,7 @@
+ctx_length,block_size,num_kv_blocks,num_q_heads,num_kv_heads,head_dim,status,ref_latency_us,triton_latency_us,speedup,passed,max_abs_error,max_rel_error,ref_top1_token,triton_top1_token,top1_match
+16,16,1,14,2,64,ok,28162.05,27749.41,1.01,True,0.021484,1.972237,198,198,True
+32,16,2,14,2,64,ok,28914.5,27778.78,1.04,True,0.03125,1.810508,226,226,True
+64,16,4,14,2,64,ok,32832.49,26006.2,1.26,True,0.023438,1.972087,226,226,True
+128,16,8,14,2,64,ok,34430.94,27543.83,1.25,True,0.018066,1.987582,125301,125301,True
+256,16,16,14,2,64,ok,46239.93,25828.9,1.79,True,0.016602,1.978412,11,11,True
+512,16,32,14,2,64,ok,74222.65,27598.19,2.69,True,0.027344,1.99768,198,198,True
