@@ -1,0 +1,52 @@
+{
+  "timestamp": "2026-07-15T17:07:05",
+  "git_commit": "6c57ba85485933e7f91a5523e59a269581981045",
+  "git_dirty": true,
+  "gpu": "NVIDIA GeForce RTX 3060",
+  "cuda_version": "12.8",
+  "pytorch_version": "2.10.0+cu128",
+  "transformers_version": "4.57.6",
+  "python_version": "3.10.12",
+  "model_path": "/mnt/e/vllm_awq_qwen_exp/models/Qwen2.5-0.5B-Instruct",
+  "dtype": "float16",
+  "num_gpu_blocks": 16384,
+  "seed": 42,
+  "args": {
+    "executor": "qwen",
+    "model_path": "",
+    "modes": [
+      "serial",
+      "continuous"
+    ],
+    "concurrency": [
+      2,
+      4,
+      8
+    ],
+    "requests": 16,
+    "repeats": 3,
+    "output_dir": "benchmark_results",
+    "num_gpu_blocks": null,
+    "smoke_test": false,
+    "skip_warmup": false,
+    "ab_test": true,
+    "attention_backend": null,
+    "homogeneous_ctx": null,
+    "homogeneous_out": null,
+    "ragged_ctx": false,
+    "ragged_out": false
+  },
+  "num_requests": 16,
+  "concurrency_levels": [
+    2,
+    4,
+    8
+  ],
+  "repeats": 3,
+  "workload_desc": "default_mixed",
+  "git_branch": "feature/v1-style-real-paged-attention",
+  "git_diff_stat": "benchmark_results/nsys_trace.sqlite     | Bin 5558272 -> 5595136 bytes\n benchmarks/benchmark_paged_attention.py | 289 +++++++---\n benchmarks/continuous_batching.py       | 973 +++++++++++++++++++++++++++++++-\n mini_vllm/cache/manager.py              |  31 +-\n mini_vllm/config.py                     |   6 +\n mini_vllm/engine/engine.py              |   3 +-\n mini_vllm/executor/paged_executor.py    |   3 +\n tests/test_paged_attention_gpu.py       | 260 +++++++++\n 8 files changed, 1483 insertions(+)",
+  "triton_version": "3.6.0",
+  "enable_prefix_caching": false,
+  "attention_backend_toggle": "experiment alternates between reference and triton"
+}

@@ -15,7 +15,7 @@ class Executor(Protocol):
     """Abstract protocol for model executors.
 
     Defines the contract between the engine core and any model runner,
-    whether fake (educational) or real (Qwen/HuggingFace).
+    whether fake (simulated) or real (Qwen/HuggingFace).
 
     Phase 1 additions:
     - ``execute()`` method for unified prefill+decode execution

@@ -1,6 +1,6 @@
 # Architecture Review: mini-vLLM
 
-> **用途**：面试复习 / 架构回顾
+> **用途**：架构回顾 / Architecture Review
 > **设计原则**：Architecture = Who owns what responsibility
 > **与真实 vLLM 的关系**：核心概念一致，实现细节简化
 
@@ -485,7 +485,7 @@ For a complete module-by-module mapping, see [`docs/VLLM_Mapping.md`](./VLLM_Map
 
 | 特性 | 为什么省略 |
 |------|-----------|
-| **Multi-GPU / Tensor Parallel** | 教育模型只需理解单卡架构；多卡是工程优化，不改变设计 |
+| **Multi-GPU / Tensor Parallel** | 单卡架构已足够展示核心设计；多卡是工程优化，不改变设计 |
 | **Distributed Serving** | 无分布式需求（只跑本地 single node） |
 | **PagedAttention CUDA Kernel** | 用 Python dict + list 模拟 KV cache 行为（理解架构不需要 CUDA） |
 | **CUDA Graph** | 减少 kernel launch overhead 的优化——理解架构不需要 |
@@ -533,7 +533,7 @@ Prefix Cache（两阶段）:
   为什么 RefCount？防止 use-after-free（A 释放时 B 还在共享）
   为什么 Scheduler 必须感知？token budget / admission / chunked prefill 都需要正确的 uncached_tokens
 
-Metrics（面试重点）:
+Metrics（重点）:
   TTFT  = time to first token（prefill 延迟）
   TPOT  = time per output token（decode 延迟）
   Throughput = req/s + tok/s

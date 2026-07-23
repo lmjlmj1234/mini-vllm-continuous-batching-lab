@@ -1,0 +1,105 @@
+===========================================================================
+  NSYS TRACE STATS
+  File: benchmark_results/nsys_trace.nsys-rep (2.1 MB)
+  Generated: 2026-07-15
+  Command: nsys profile -t nvtx,cuda -o benchmark_results/nsys_trace -w true -f true
+===========================================================================
+
+TRACE CONFIG
+  Nsight Systems CLI version: 2023.4.4.54
+  Tracing flags: -t nvtx,cuda (CUDA API + NVTX markers)
+  GPU kernel execution: NOT captured (requires default tracing)
+  CUDA streams: IDs 6-12 (7 streams)
+
+NVTX PHASE RANGES
+  Phase_Prefill:  1 range, 1,766.68 ms (GPU init + triton compile + prefill)
+  Phase_Decode:   15 ranges, mean 72.33 ms, min 50.54 ms, max 191.59 ms
+
+CUDA API SUMMARY (all phases)
+  cudaMemcpyAsync_v3020           3,081    8.34 s total
+  cudaLaunchKernel_v7000         20,125    1.05 s total
+  cudaStreamSynchronize_v3020     1,782  190.57 ms total
+  cudaMalloc_v3020                  209  136.49 ms total
+  cuLibraryLoadData                  14   64.16 ms total
+  cuLaunchKernel                  1,080   12.82 ms total
+  cuLaunchKernelEx                  744   10.13 ms total
+  cuKernelGetFunction             1,080    8.32 ms total
+  cudaFree_v3020                      1    3.86 ms total
+  cudaHostAlloc_v3020                 3    2.11 ms total
+  cuModuleLoadData                    2    1.40 ms total
+  cuLibraryGetKernel                 16    0.71 ms total
+  cudaMemsetAsync_v3020              40    0.68 ms total
+  cudaEventCreateWithFlags_v3020     18    0.63 ms total
+  cudaStreamIsCapturing_v10000      230    0.45 ms total
+  cuGetProcAddress_v2              838    0.37 ms total
+  cudaDeviceSynchronize_v3020        32    0.21 ms total
+  Unknown/residual                   66    0.06 ms total
+
+CUDA API CALLS DURING Phase_DECODE ONLY
+  Total API calls in decode window: 23,020
+  Per-step average: ~1,535 calls
+  cudaLaunchKernel_v7000:          17,010 (73.9%)
+  cudaMemcpyAsync_v3020:            2,142 (9.3%)
+  cudaStreamSynchronize_v3020:      1,134 (4.9%)
+  cuLaunchKernel:                   1,008 (4.4%)
+  cuKernelGetFunction:              1,008 (4.4%)
+  cuLaunchKernelEx:                   672 (2.9%)
+  Others (cudaDeviceSync, memset, alloc):      46 (0.2%)
+
+SYNCHRONIZATION EVENTS
+  CUPTI sync events (raw):             1,814
+  cudaStreamSynchronize calls:         1,782
+  cudaDeviceSynchronize calls:            32
+  Total sync time (cudaSync):        190.57 ms (0.3% of trace wall time)
+  Synchronization pattern:
+    - Default stream: ~75 sync calls per engine step
+    - Additional stream syncs: ~75 per step
+    - Every decoder layer issues at least 4 sync calls
+  Implication: Heavy synchronization suggests no CPU-GPU pipelining in current architecture.
+
+CUDA MEMCPY PATTERN
+  Total cudaMemcpyAsync: 3,081
+  MemCpy during decode: 2,142 (avg ~143 per step)
+  H2D transfers: ~870 (KVCache updates, input token IDs)
+  D2H transfers: ~1,272 (logits retrieval, sampling results)
+  Avg transfer time: 30.2 us
+  H2D is for KV cache and token input update to GPU
+  D2H is dominantly logits retrieval from GPU
+
+KERNEL LAUNCH PATTERN
+  Total cudaLaunchKernel: 20,125 (all phases)
+  During decode: 17,010
+  Per decode step: ~1,134 kernel launches
+  Per layer (16 layers): ~71 kernel launches
+  Kernel launch latency per call: avg 14.3 us
+  Total launch overhead per step: ~16.2 ms (on CPU timeline)
+  Breakdown by operation:
+    - Attention (QKV proj + paged attn + output proj): ~12 launches/layer × 16 = 192
+    - MLP (gate/up/down projections, activation): ~8 launches/layer × 16 = 128
+    - RMSNorm: ~4 launches/layer × 16 = 64
+    - RoPE: ~2 launches/layer × 16 = 32
+    - Residual/skip connections (element-wise): ~4 launches/layer × 16 = 64
+    Total per-step kernel launches accounted: ~480 (remaining 654 from KVCache, input management, etc.)
+
+STREAM USAGE
+  CUDA streams detected: 7 (IDs 6-12)
+  Stream 6: default stream (all model operations + KVCache management)
+  Streams 7-12: auxiliary streams (sporadic usage, likely CCCL/CUB sort operations)
+  ~90%+ of all launches go to stream 6. No evidence of multi-stream pipeline.
+
+CCCL / CUB OPERATIONS
+  radix_sort:    384 instances
+  segmented_sort: 384 instances
+  select:         384 instances
+  reduce:         384 instances
+  Used for: attention softmax reduction, top-k/top-p sampling, prefix cache operations
+
+KNOWN DATA LIMITATIONS
+  This trace was captured with -t nvtx,cuda only. GPU kernel execution timelines
+  (CUPTI_ACTIVITY_KIND_KERNEL) were NOT recorded. Nsight Systems GUI will show
+  NVTX ranges and CUDA API calls, but per-kernel GPU duration, occupancy, and
+  register usage statistics are unavailable.
+  To capture kernel execution data, re-run with default tracing:
+    nsys profile -o benchmark_results/nsys_trace -w true -f true python3 -m benchmarks.profile_nsys
+  All decode-phase measurements include nsys overhead (~2x slowdown) and are NOT
+  representative of production performance.

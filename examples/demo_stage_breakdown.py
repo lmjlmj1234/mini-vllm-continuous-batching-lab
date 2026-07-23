@@ -155,7 +155,7 @@ def main() -> None:
         print("  In a real LLM serving setup, executor_forward would be dominated")
         print("  by GPU kernel execution time (attention, FFN, sampling).")
         print()
-        print("  What you CAN learn from this run:")
+        print("  What this run demonstrates:")
         print("  - Whether scheduler overhead is negligible vs. executor time")
         print("  - Whether KV cache allocation adds noticeable latency")
         print("  - Whether prefix cache lookups are fast enough")

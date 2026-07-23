@@ -1,4 +1,4 @@
-# mini-vLLM Test Cheat Sheet — 面试复习用
+# mini-vLLM Test Reference
 
 > 基于当前代码（176 tests, ~3s passing）。所有测试函数名、assert、不变量均来自实际代码。
 > 运行方式：`PYTHONPATH=. python3 -m pytest tests/ -q`

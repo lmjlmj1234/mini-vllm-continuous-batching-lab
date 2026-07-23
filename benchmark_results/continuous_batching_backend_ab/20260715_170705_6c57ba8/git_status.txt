@@ -1,0 +1,38 @@
+A  benchmark_results/async_pipeline_profile.csv
+A  benchmark_results/async_pipeline_profile.json
+A  benchmark_results/minimal_async_profile.json
+A  benchmark_results/nsys_trace.nsys-rep
+AM benchmark_results/nsys_trace.sqlite
+A  benchmark_results/nsys_trace_gpu_timeline.nsys-rep
+A  benchmark_results/nsys_trace_gpu_timeline.sqlite
+A  benchmark_results/nsys_trace_stats.txt
+A  benchmark_results/nsys_trace_stats_cuda_api_sum.txt
+A  benchmark_results/nsys_trace_stats_cuda_gpu_kern_sum.txt
+A  benchmark_results/nsys_trace_stats_cuda_gpu_mem_size_sum.txt
+A  benchmark_results/nsys_trace_stats_cuda_kern_exec_sum.txt
+A  benchmark_results/nsys_trace_stats_nvtx_gpu_proj_sum.txt
+A  benchmark_results/nsys_trace_stats_nvtx_pushpop_sum.txt
+A  benchmark_results/nsys_trace_stats_osrt_sum.txt
+A  benchmarks/benchmark_async_pipeline_profile.py
+ M benchmarks/benchmark_paged_attention.py
+ M benchmarks/continuous_batching.py
+A  benchmarks/minimal_async_profile.py
+A  benchmarks/profile_nsys.py
+A  docs/async_pipeline_priority_report.md
+A  docs/async_pipeline_static_assessment.md
+A  docs/minimal_async_profile.md
+A  docs/nsys_trace_analysis.md
+ M mini_vllm/cache/manager.py
+ M mini_vllm/config.py
+ M mini_vllm/engine/engine.py
+ M mini_vllm/executor/paged_executor.py
+ M tests/test_paged_attention_gpu.py
+?? benchmark_results/batched_paged_attention/
+?? benchmark_results/continuous_batching_backend_ab/
+?? benchmark_results/nsys_new_cli_validation.txt
+?? benchmark_results/nsys_trace_new_cli.nsys-rep
+?? benchmark_results/nsys_trace_new_cli.sqlite
+?? benchmark_results/nsys_trace_old_sqlite_cuda_gpu_kern_sum.csv
+?? benchmark_results/nsys_upgrade_log.txt
+?? docs/batched_paged_attention_audit.md
+?? docs/nsys_wsl_kernel_timeline_verdict.md

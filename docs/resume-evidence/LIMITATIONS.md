@@ -4,11 +4,11 @@
 
 | Aspect / 方面 | Limitation / 限制 |
 |--------|-----------|
-| **Intended use / 预期用途** | Educational reimplementation for learning vLLM's core architecture. NOT production-ready. / 用于学习 vLLM 核心架构的教学复现。**非生产就绪。** |
+| **Intended use / 预期用途** | Reference reimplementation of vLLM's core architecture. NOT production-ready. / vLLM 核心架构的参考复现。**非生产就绪。** |
 | **Completeness / 完整性** | Implements ~30% of vLLM's feature surface (scheduler, KV cache, prefix cache, metrics, serving). Does NOT implement: preemption, swapping, CUDA kernels, tensor parallelism, pipeline parallelism, quantization, speculative decoding, multi-LoRA, beam search, guided decoding, etc. / 实现了 vLLM 约 30% 的功能面。未实现：抢占、交换、CUDA 内核、张量并行、流水线并行、量化、推测解码等。 |
 | **Code maturity / 代码成熟度** | Built in iterative phases over development sessions. Some modules carry phase-specific scaffolding (e.g., memory trace debug output, stage profiler for development profiling) that would be removed or trimmed for production. / 在多次开发会话中迭代构建。部分模块带有阶段特定的脚手架代码。 |
 
-> **中文摘要：** 本项目是 vLLM 核心架构的教学复现，实现了约 30% 的功能面。**不适用于生产环境。** 核心缺失功能包括抢占、交换、自定义 CUDA 内核和分布式推理。
+> **中文摘要：** 本项目是 vLLM 核心架构的参考复现，实现了约 30% 的功能面。**不适用于生产环境。** 核心缺失功能包括抢占、交换、自定义 CUDA 内核和分布式推理。
 
 ## 2. Model Execution / 模型执行
 
@@ -147,4 +147,4 @@
 | Testing / 测试 | 176 tests, fault injection suite / 176 测试+故障注入套件 | No GPU tests, no load tests, no regression benchmarks / 无 GPU 测试、无负载测试、无回归基准 |
 | Documentation / 文档 | Extensive bilingual docs / 广泛的双语文档 | Some redundancy, some stale counts / 部分冗余、部分过时计数 |
 
-**Bottom line / 总结：** mini-vLLM faithfully reimplements vLLM's scheduling and KV cache architecture as an educational tool. It is not suitable for production inference. The largest gaps vs vLLM are: no preemption (swap-to-CPU), no custom PagedAttention kernel (uses transformers native KV cache), no GPU execution path, no distributed inference, and no production serving features. / mini-vLLM 忠实地复现了 vLLM 的调度和 KV 缓存架构，作为教学工具使用。**不适用于生产推理。** 与 vLLM 的最大差距包括：无抢占机制、无自定义 PagedAttention 内核、无 GPU 执行路径、无分布式推理、无生产级服务功能。
+**Bottom line / 总结：** mini-vLLM faithfully reimplements vLLM's scheduling and KV cache architecture as a reference implementation. It is not suitable for production inference. The largest gaps vs vLLM are: no preemption (swap-to-CPU), no custom PagedAttention kernel (uses transformers native KV cache), no GPU execution path, no distributed inference, and no production serving features. / mini-vLLM 忠实地复现了 vLLM 的调度和 KV 缓存架构，作为参考实现。**不适用于生产推理。** 与 vLLM 的最大差距包括：无抢占机制、无自定义 PagedAttention 内核、无 GPU 执行路径、无分布式推理、无生产级服务功能。

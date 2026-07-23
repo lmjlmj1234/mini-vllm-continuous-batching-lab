@@ -48,7 +48,8 @@ class LLMEngine:
             num_blocks=self._config.num_gpu_blocks,
         )
         self._block_manager = BlockManager(self._config.block_size, allocator,
-                                           profiler=self._profiler)
+                                           profiler=self._profiler,
+                                           enable_prefix_caching=self._config.enable_prefix_caching)
 
         # Create worker → executor
         self._worker = self._create_worker()

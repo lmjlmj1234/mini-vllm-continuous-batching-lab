@@ -143,7 +143,7 @@ hash = hash(tuple(block_tokens))
 
 约束：
 - hash 碰撞理论上可能导致错误共享
-- 对教育实现容忍，生产环境使用更健壮的 hash（如 xxhash）
+- 对实现容忍，生产环境使用更健壮的 hash（如 xxhash）
 - Hash 仅针对 prompt 内容（decode 产生的 token 会进入未缓存的新 block）
 
 ---
@@ -447,17 +447,17 @@ For a complete module-by-module mapping, see [`docs/VLLM_Mapping.md`](./VLLM_Map
 
 **Q5**: Hash 碰撞会怎样？如何缓解？
 
-> A: Hash 碰撞 = 不同的 token 内容映射为相同的 hash → 错误地共享了实际上不同的 KV 数据 → 模型输出错误。缓解：使用更健壮的 hash（xxhash），或在 hash 匹配后做 full token comparison。教育实现中接受碰撞风险。
+> A: Hash 碰撞 = 不同的 token 内容映射为相同的 hash → 错误地共享了实际上不同的 KV 数据 → 模型输出错误。缓解：使用更健壮的 hash（xxhash），或在 hash 匹配后做 full token comparison。当前实现中接受碰撞风险。
 
 **Q6**: 为什么注册在 allocate 时而不是 block 写满时？
 
-> A: 因为 prompt tokens 在 sequence 创建时就完全已知。Block 注册在分配时刻（写数据之前），另一个 sequence 看到 cache 命中时 block 可能尚未写完，但只要写入顺序正确（先写的 sequence 先处理），读取时数据已就绪。这个简化在教育场景中是可接受的。
+> A: 因为 prompt tokens 在 sequence 创建时就完全已知。Block 注册在分配时刻（写数据之前），另一个 sequence 看到 cache 命中时 block 可能尚未写完，但只要写入顺序正确（先写的 sequence 先处理），读取时数据已就绪。这个简化在当前场景中是可接受的。
 
 ### 架构理解
 
 **Q7**: 如果切换到 QwenExecutor，Prefix Cache 是否还有效？
 
-> A: Prefix Cache 的核心——hash 匹配、block 共享、ref count——在 BlockAllocator/BlockManager 层面，不依赖 executor 类型。但 QwenExecutor 存储 KV 为 per-seq 张量（past_key_values），不是 block 粒度的显存。因此 block 级共享的 KV 数据需要额外的桥接逻辑才能被模型读取。教育实现中 FakeModelExecutor 完全支持 prefix cache，QwenExecutor 需要额外的 KV 数据整合工作。
+> A: Prefix Cache 的核心——hash 匹配、block 共享、ref count——在 BlockAllocator/BlockManager 层面，不依赖 executor 类型。但 QwenExecutor 存储 KV 为 per-seq 张量（past_key_values），不是 block 粒度的显存。因此 block 级共享的 KV 数据需要额外的桥接逻辑才能被模型读取。当前实现中 FakeModelExecutor 完全支持 prefix cache，QwenExecutor 需要额外的 KV 数据整合工作。
 
 **Q8**: Copy-on-Write 如何从当前设计扩展？
 

@@ -1,0 +1,176 @@
+{
+  "config": {
+    "model": "Qwen2.5-0.5B-Instruct",
+    "batch_size": 1,
+    "context_length": 128,
+    "decode_tokens_measured": 10,
+    "warmup_steps": 3,
+    "block_size": 16,
+    "attention_backend": "triton"
+  },
+  "stages_us": {
+    "scheduler": {
+      "avg_us": 31.31,
+      "min_us": 28.55,
+      "max_us": 34.46,
+      "p50_us": 30.71,
+      "p95_us": 34.46
+    },
+    "ensure_blocks": {
+      "avg_us": 5.11,
+      "min_us": 4.57,
+      "max_us": 6.09,
+      "p50_us": 4.97,
+      "p95_us": 6.09
+    },
+    "input_build": {
+      "avg_us": 848.14,
+      "min_us": 699.34,
+      "max_us": 1497.25,
+      "p50_us": 799.64,
+      "p95_us": 1497.25
+    },
+    "apply_output": {
+      "avg_us": 9.41,
+      "min_us": 8.52,
+      "max_us": 10.49,
+      "p50_us": 9.48,
+      "p95_us": 10.49
+    },
+    "cleanup_metrics": {
+      "avg_us": 31.09,
+      "min_us": 28.82,
+      "max_us": 33.64,
+      "p50_us": 31.23,
+      "p95_us": 33.64
+    }
+  },
+  "gpu_forward_ms": {
+    "avg_ms": 37.59,
+    "min_ms": 33.7,
+    "max_ms": 45.37,
+    "p50_ms": 36.04,
+    "p95_ms": 45.37
+  },
+  "cpu_gap_us": {
+    "avg_us": 0.93,
+    "min_us": 0.77,
+    "max_us": 1.58,
+    "p50_us": 0.88,
+    "p95_us": 1.58
+  },
+  "per_step_total_us": {
+    "avg_us": 38513.0,
+    "min_us": 34579.16,
+    "max_us": 46954.97,
+    "p50_us": 36934.73,
+    "p95_us": 46954.97
+  },
+  "raw_records": [
+    {
+      "step": 5,
+      "scheduler_us": 34.5,
+      "ensure_blocks_us": 6.1,
+      "input_build_us": 1497.3,
+      "forward_gpu_ms": 45.3746,
+      "apply_output_us": 10.5,
+      "cleanup_metrics_us": 32.1
+    },
+    {
+      "step": 6,
+      "scheduler_us": 30.7,
+      "ensure_blocks_us": 5.0,
+      "input_build_us": 772.1,
+      "forward_gpu_ms": 35.0352,
+      "apply_output_us": 8.9,
+      "cleanup_metrics_us": 30.7
+    },
+    {
+      "step": 7,
+      "scheduler_us": 30.3,
+      "ensure_blocks_us": 4.7,
+      "input_build_us": 731.0,
+      "forward_gpu_ms": 34.5918,
+      "apply_output_us": 9.3,
+      "cleanup_metrics_us": 30.4
+    },
+    {
+      "step": 8,
+      "scheduler_us": 34.2,
+      "ensure_blocks_us": 5.3,
+      "input_build_us": 776.1,
+      "forward_gpu_ms": 44.2666,
+      "apply_output_us": 9.6,
+      "cleanup_metrics_us": 31.0
+    },
+    {
+      "step": 9,
+      "scheduler_us": 29.1,
+      "ensure_blocks_us": 4.6,
+      "input_build_us": 834.2,
+      "forward_gpu_ms": 40.9361,
+      "apply_output_us": 9.3,
+      "cleanup_metrics_us": 31.2
+    },
+    {
+      "step": 10,
+      "scheduler_us": 29.1,
+      "ensure_blocks_us": 4.6,
+      "input_build_us": 813.8,
+      "forward_gpu_ms": 36.0441,
+      "apply_output_us": 9.5,
+      "cleanup_metrics_us": 33.6
+    },
+    {
+      "step": 11,
+      "scheduler_us": 32.2,
+      "ensure_blocks_us": 5.5,
+      "input_build_us": 811.4,
+      "forward_gpu_ms": 35.095,
+      "apply_output_us": 9.9,
+      "cleanup_metrics_us": 31.7
+    },
+    {
+      "step": 12,
+      "scheduler_us": 33.8,
+      "ensure_blocks_us": 5.0,
+      "input_build_us": 799.6,
+      "forward_gpu_ms": 33.7006,
+      "apply_output_us": 8.5,
+      "cleanup_metrics_us": 31.6
+    },
+    {
+      "step": 13,
+      "scheduler_us": 28.6,
+      "ensure_blocks_us": 4.8,
+      "input_build_us": 699.3,
+      "forward_gpu_ms": 34.1867,
+      "apply_output_us": 9.8,
+      "cleanup_metrics_us": 29.8
+    },
+    {
+      "step": 14,
+      "scheduler_us": 30.7,
+      "ensure_blocks_us": 5.7,
+      "input_build_us": 746.5,
+      "forward_gpu_ms": 36.6488,
+      "apply_output_us": 8.7,
+      "cleanup_metrics_us": 28.8
+    }
+  ],
+  "n_recorded_steps": 10,
+  "analysis": {
+    "avg_step_total_us": 38513.0,
+    "avg_gpu_ms": 37.59,
+    "avg_cpu_gap_us": 923.0,
+    "scheduler_pct_of_total": 0.1,
+    "ensure_blocks_pct_of_total": 0.0,
+    "input_build_pct_of_total": 2.2,
+    "apply_output_pct_of_total": 0.0,
+    "cleanup_metrics_pct_of_total": 0.1,
+    "gpu_pct_of_total": 97.6,
+    "cpu_gap_pct_of_total": 2.4,
+    "theoretical_max_hideable_us": 884.56,
+    "theoretical_max_speedup_ratio": 1.024
+  }
+}

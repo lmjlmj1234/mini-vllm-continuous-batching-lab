@@ -1,6 +1,6 @@
-# Learning Notes
+# Design Notes
 
-Design decisions, observations, and lessons learned while building this.
+Design decisions, observations, and engineering notes for this implementation.
 
 **Design docs (recommended reading order):**
 - [Runtime_Timeline.md](Runtime_Timeline.md) — Engine step lifecycle, sequence state machine, component interaction trace

@@ -2,7 +2,7 @@
 
 ## 1. Report Scope / 报告范围
 
-- **Project / 项目:** mini-vLLM Continuous Batching Lab — educational reimplementation of vLLM core architecture
+- **Project / 项目:** mini-vLLM Continuous Batching Lab — reference reimplementation of vLLM core architecture
 - **Branch / 分支:** `main`
 - **Commit:** `5338f1e` (serving layer: HTTP disconnect lifecycle management + fault injection tests)
 - **Test date / 测试日期:** 2026-07-07

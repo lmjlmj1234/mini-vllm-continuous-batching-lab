@@ -25,6 +25,8 @@ import json
 import math
 import os
 import random
+import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -35,7 +37,10 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+import torch
+
 from mini_vllm import Config, LLMEngine, Status
+from mini_vllm.sequence.status import Status as SeqStatus
 
 
 # ======================================================================
@@ -124,8 +129,12 @@ def _generate_request_prompts(
         prompt = base * repeats
 
         # Record what we'll actually pass
+        # Unique suffix prevents prefix cache block sharing between requests
+        # Unique random prefix ensures prefix cache never shares blocks
+        unique_prefix = f"<|req_{i:04d}|>" + "".join(rng.choices("abcdefghijklmnopqrstuvwxyz", k=8))
+        prompt_with_id = unique_prefix + prompt
         requests.append({
-            "prompt": prompt,
+            "prompt": prompt_with_id,
             "target_input_tokens": target_in,
             "output_length": out_tokens,
         })
@@ -140,8 +149,179 @@ def _generate_request_prompts(
 
 
 # ======================================================================
+# A/B Workload generation (homogeneous / ragged overrides)
+# ======================================================================
+
+def _generate_ab_request_prompts(
+    tokenizer,
+    num_requests: int,
+    seed: int = 42,
+    homogeneous_ctx: Optional[int] = None,
+    homogeneous_out: Optional[int] = None,
+    ragged_ctx: bool = False,
+    ragged_out: bool = False,
+) -> List[Dict[str, Any]]:
+    """Generate requests for A/B experiment with homogeneous/ragged modes.
+
+    Args:
+        homogeneous_ctx: If set, all requests have this exact context length.
+        homogeneous_out: If set, all requests have this exact output length.
+        ragged_ctx: Wide uniform distribution of context lengths (32-1024).
+        ragged_out: Wide uniform distribution of output lengths (8-128).
+    """
+    rng = random.Random(seed)
+
+    if homogeneous_ctx is not None and homogeneous_out is not None:
+        # Fully homogeneous: all requests identical
+        prompt_chars_needed = homogeneous_ctx * 3
+        base = _BASE_CHARS["medium"]
+        repeats = max(1, prompt_chars_needed // len(base) + 1)
+        prompt = base * repeats
+        requests = [
+            {"prompt": f"<|req_{j:04d}|>" + prompt, "target_input_tokens": homogeneous_ctx,
+             "output_length": homogeneous_out}
+            for j in range(num_requests)
+        ]
+    elif homogeneous_ctx is not None and ragged_out:
+        # Fixed context, varying output
+        prompt_chars_needed = homogeneous_ctx * 3
+        base = _BASE_CHARS["medium"]
+        repeats = max(1, prompt_chars_needed // len(base) + 1)
+        prompt = base * repeats
+        requests = [
+            {"prompt": f"<|req_{j:04d}|>" + prompt, "target_input_tokens": homogeneous_ctx,
+             "output_length": rng.randint(8, 128)}
+            for j in range(num_requests)
+        ]
+    elif homogeneous_ctx is not None:
+        # Fixed context, default output distribution
+        prompt_chars_needed = homogeneous_ctx * 3
+        base = _BASE_CHARS["medium"]
+        repeats = max(1, prompt_chars_needed // len(base) + 1)
+        prompt = base * repeats
+        requests = [
+            {"prompt": prompt + f" Request {j}", "target_input_tokens": homogeneous_ctx,
+             "output_length": rng.randint(8, 64)}
+            for j in range(num_requests)
+        ]
+    elif ragged_ctx:
+        # Wide uniform distribution of context lengths
+        requests = []
+        for i in range(num_requests):
+            target_in = rng.randint(32, 1024)
+            out_len = homogeneous_out or rng.randint(8, 128) if ragged_out else rng.randint(16, 64)
+            prompt_chars_needed = target_in * 3
+            base = _BASE_CHARS["medium"]
+            repeats = max(1, prompt_chars_needed // len(base) + 1)
+            prompt = base * repeats
+            requests.append({
+                "prompt": f"<|req_{i:04d}|>" + prompt, "target_input_tokens": target_in,
+                "output_length": out_len,
+            })
+    elif ragged_out:
+        # Default context distribution, wide output lengths
+        requests = []
+        for i in range(num_requests):
+            target_in = rng.randint(64, 512)
+            out_len = rng.randint(8, 128)
+            prompt_chars_needed = target_in * 3
+            base = _BASE_CHARS["medium"]
+            repeats = max(1, prompt_chars_needed // len(base) + 1)
+            prompt = base * repeats
+            requests.append({
+                "prompt": f"<|req_{i:04d}|>" + prompt, "target_input_tokens": target_in,
+                "output_length": out_len,
+            })
+    else:
+        # Use standard workload distribution
+        return _generate_request_prompts(tokenizer, num_requests, seed=seed)
+
+    # Tokenize all prompts to get actual lengths
+    for req in requests:
+        tokens = tokenizer.encode(req["prompt"], add_special_tokens=True)
+        req["actual_input_tokens"] = len(tokens)
+        req["prompt_token_ids"] = tokens
+
+    return requests
+
+
+# ======================================================================
+# A/B Workload generation (homogeneous / ragged overrides)
+# ======================================================================
+
+def _generate_ab_request_prompts(
+    tokenizer,
+    num_requests: int,
+    seed: int = 42,
+    homogeneous_ctx: Optional[int] = None,
+    homogeneous_out: Optional[int] = None,
+    ragged_ctx: bool = False,
+    ragged_out: bool = False,
+) -> List[Dict[str, Any]]:
+    """Generate requests for A/B experiment with homogeneous/ragged modes."""
+    rng = random.Random(seed)
+
+    if homogeneous_ctx is not None and homogeneous_out is not None:
+        prompt_chars_needed = homogeneous_ctx * 3
+        base = _BASE_CHARS["medium"]
+        repeats = max(1, prompt_chars_needed // len(base) + 1)
+        prompt = base * repeats
+        requests = [
+            {"prompt": prompt, "target_input_tokens": homogeneous_ctx,
+             "output_length": homogeneous_out}
+            for _ in range(num_requests)
+        ]
+    elif homogeneous_ctx is not None:
+        prompt_chars_needed = homogeneous_ctx * 3
+        base = _BASE_CHARS["medium"]
+        repeats = max(1, prompt_chars_needed // len(base) + 1)
+        prompt = base * repeats
+        requests = [
+            {"prompt": prompt, "target_input_tokens": homogeneous_ctx,
+             "output_length": rng.randint(8, 64)}
+            for _ in range(num_requests)
+        ]
+    elif ragged_ctx:
+        requests = []
+        for _ in range(num_requests):
+            target_in = rng.randint(32, 1024)
+            out_len = homogeneous_out or (rng.randint(8, 128) if ragged_out else rng.randint(16, 64))
+            prompt_chars_needed = target_in * 3
+            base = _BASE_CHARS["medium"]
+            repeats = max(1, prompt_chars_needed // len(base) + 1)
+            prompt = base * repeats
+            requests.append({
+                "prompt": prompt, "target_input_tokens": target_in,
+                "output_length": out_len,
+            })
+    elif ragged_out:
+        requests = []
+        for _ in range(num_requests):
+            target_in = rng.randint(64, 512)
+            out_len = rng.randint(8, 128)
+            prompt_chars_needed = target_in * 3
+            base = _BASE_CHARS["medium"]
+            repeats = max(1, prompt_chars_needed // len(base) + 1)
+            prompt = base * repeats
+            requests.append({
+                "prompt": prompt, "target_input_tokens": target_in,
+                "output_length": out_len,
+            })
+    else:
+        return _generate_request_prompts(tokenizer, num_requests, seed=seed)
+
+    for req in requests:
+        tokens = tokenizer.encode(req["prompt"], add_special_tokens=True)
+        req["actual_input_tokens"] = len(tokens)
+        req["prompt_token_ids"] = tokens
+
+    return requests
+
+
+# ======================================================================
 # Mode runners
 # ======================================================================
+
 
 def _build_config(mode: str, concurrency: int, **overrides) -> Config:
     """Build Config for the given mode and concurrency level."""
@@ -319,6 +499,7 @@ def run_benchmark_mode(
         model_path=model_path,
         num_gpu_blocks=num_gpu_blocks,
         request_timeout_s=120.0,
+        enable_prefix_caching=False,
     )
     engine = LLMEngine(config)
     start_time = time.time()
@@ -359,6 +540,7 @@ def run_warmup(
         model_path=model_path,
         num_gpu_blocks=num_gpu_blocks,
         request_timeout_s=120.0,
+        enable_prefix_caching=False,
     )
     engine = LLMEngine(config)
     try:
@@ -618,6 +800,769 @@ def _generate_plots(reports, metadata, output_dir):
 
     print(f"  Plots saved to {plots_dir}")
 
+def _build_ab_config(
+    concurrency: int,
+    model_path: str,
+    num_gpu_blocks: int,
+    attention_backend: str,
+    **overrides,
+) -> "Config":
+    """Build Config for paged executor with the given attention backend."""
+    from mini_vllm import Config
+    params = dict(
+        executor_type="paged",
+        attention_backend=attention_backend,
+        max_num_seqs=concurrency,
+        max_num_batched_tokens=8192,
+        max_num_prefill_tokens=2048,
+        max_prefill_chunk_size=128,
+        block_size=16,
+        chunked_prefill_enabled=True,
+        decode_first=True,
+        print_step_events=False,
+        memory_trace=False,
+        trace_enabled=True,
+        model_path=model_path,
+        num_gpu_blocks=num_gpu_blocks,
+        request_timeout_s=120.0,
+        enable_prefix_caching=False,
+    )
+    params.update(overrides)
+    return Config(**params)
+
+
+def _extract_output_token_ids(engine):
+    """Extract per-request output token IDs from a finished engine."""
+    from mini_vllm.sequence.status import Status as SeqStatus
+    token_ids = {}
+    for rid, sg in engine._queue._finished.items():
+        for seq in sg.seqs:
+            if seq.status == SeqStatus.FINISHED:
+                token_ids[rid] = list(seq.output_token_ids)
+    return token_ids
+
+
+def _run_ab_single_backend(
+    concurrency: int,
+    requests_data,
+    model_path: str,
+    num_gpu_blocks: int,
+    attention_backend: str,
+    label: str = "",
+) -> dict:
+    """Run continuous batching with the specified attention backend."""
+    import time
+    import traceback
+    import torch
+    from mini_vllm import LLMEngine, Status
+
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.synchronize()
+
+    config = _build_ab_config(
+        concurrency=concurrency,
+        model_path=model_path,
+        num_gpu_blocks=num_gpu_blocks,
+        attention_backend=attention_backend,
+    )
+    engine = LLMEngine(config)
+    start_time = time.time()
+    try:
+        for i, req in enumerate(requests_data):
+            engine.add_request(req["prompt"], max_new_tokens=req["output_length"])
+        engine.run_until_done()
+    except Exception as e:
+        print(f"  ERROR in {label} concurrency={concurrency}: {e}")
+        traceback.print_exc()
+        del engine
+        _cleanup_gpu()
+        return {"error": str(e), "backend": attention_backend, "concurrency": concurrency}
+
+    wall_time = time.time() - start_time
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        peak_memory = torch.cuda.max_memory_allocated()
+    else:
+        peak_memory = 0
+
+    report = engine.engine_core.metrics_collector.report(include_per_request=True)
+    report["benchmark_wall_time_s"] = round(wall_time, 3)
+    report["peak_gpu_memory_bytes"] = peak_memory
+    report["backend"] = attention_backend
+    report["concurrency"] = concurrency
+
+    finished_seqs = [s for s in engine.engine_core.metrics_collector._finished_seqs
+                     if s.status == Status.FINISHED]
+    report["num_success"] = len(finished_seqs)
+    report["num_failed"] = len(engine.engine_core.metrics_collector._finished_seqs) - len(finished_seqs)
+
+    token_ids = _extract_output_token_ids(engine)
+    report["_output_token_ids"] = token_ids
+
+    # Explicitly drop engine reference before cleanup to ensure GPU memory
+    # is freed (the local variable must be gone before gc.collect runs).
+    del engine
+    _cleanup_gpu()
+    return report
+
+
+def _create_ab_result_dir(base_dir: str = "benchmark_results"):
+    """Create timestamped result directory with git hash."""
+    import os, time, subprocess
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    git_hash = ""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            git_hash = "_" + result.stdout.strip()
+    except Exception:
+        pass
+    dirname = f"{ts}{git_hash}"
+    result_dir = os.path.join(base_dir, "continuous_batching_backend_ab", dirname)
+    os.makedirs(result_dir, exist_ok=True)
+    return result_dir, dirname
+
+
+def _compare_correctness(
+    ref_token_ids, triton_token_ids,
+    ref_request_ids, triton_request_ids,
+):
+    """Compare output token sequences between reference and triton."""
+    results = {
+        "total_ref_requests": len(ref_token_ids),
+        "total_triton_requests": len(triton_token_ids),
+        "exact_matches": 0,
+        "partial_matches": 0,
+        "total_mismatches": 0,
+        "details": [],
+    }
+    for rid in ref_request_ids:
+        ref_tokens = ref_token_ids.get(rid, [])
+        tri_tokens = triton_token_ids.get(rid, [])
+        if len(ref_tokens) == len(tri_tokens) and ref_tokens == tri_tokens:
+            results["exact_matches"] += 1
+        elif ref_tokens and tri_tokens:
+            min_len = min(len(ref_tokens), len(tri_tokens))
+            first_diff = next(
+                (i for i in range(min_len) if ref_tokens[i] != tri_tokens[i]),
+                None,
+            )
+            results["details"].append({
+                "request_id": rid,
+                "ref_tokens": len(ref_tokens),
+                "triton_tokens": len(tri_tokens),
+                "first_diff_pos": first_diff,
+                "ref_at_diff": int(ref_tokens[first_diff]) if first_diff is not None else None,
+                "tri_at_diff": int(tri_tokens[first_diff]) if first_diff is not None else None,
+            })
+            if first_diff is None:
+                results["partial_matches"] += 1
+            else:
+                results["total_mismatches"] += 1
+    results["correctness_pass"] = results["exact_matches"] == results["total_ref_requests"]
+    return results
+
+
+def _compute_ab_derived_metrics(ref_report, triton_report):
+    """Compute derived speedup metrics between backends."""
+    ref_rps = ref_report.get("throughput_req_per_sec", 0.0)
+    tri_rps = triton_report.get("throughput_req_per_sec", 0.0)
+    ref_tps = ref_report.get("throughput_tok_per_sec", 0.0)
+    tri_tps = triton_report.get("throughput_tok_per_sec", 0.0)
+    ref_tpot = ref_report.get("avg_tpot_ms", 0.0)
+    tri_tpot = triton_report.get("avg_tpot_ms", 0.0)
+    return {
+        "concurrency": ref_report.get("concurrency", triton_report.get("concurrency", 0)),
+        "throughput_speedup_req": round(tri_rps / ref_rps, 4) if ref_rps > 0 else 0.0,
+        "throughput_speedup_tok": round(tri_tps / ref_tps, 4) if ref_tps > 0 else 0.0,
+        "throughput_uplift_pct": round((tri_rps - ref_rps) / ref_rps * 100, 2) if ref_rps > 0 else 0.0,
+        "tpot_reduction_pct": round((ref_tpot - tri_tpot) / ref_tpot * 100, 2) if ref_tpot > 0 else 0.0,
+        "ref_peak_gpu_mem_mb": round(ref_report.get("peak_gpu_memory_bytes", 0) / 1024 / 1024, 1),
+        "triton_peak_gpu_mem_mb": round(triton_report.get("peak_gpu_memory_bytes", 0) / 1024 / 1024, 1),
+        "ref_wall_time_s": ref_report.get("benchmark_wall_time_s", 0.0),
+        "triton_wall_time_s": triton_report.get("benchmark_wall_time_s", 0.0),
+        "ref_avg_tpot_ms": ref_tpot,
+        "triton_avg_tpot_ms": tri_tpot,
+        "ref_p50_tpot_ms": ref_report.get("p50_tpot_ms", 0.0),
+        "triton_p50_tpot_ms": triton_report.get("p50_tpot_ms", 0.0),
+        "ref_avg_ttft_ms": ref_report.get("avg_ttft_ms", 0.0),
+        "triton_avg_ttft_ms": triton_report.get("avg_ttft_ms", 0.0),
+        "ref_avg_batch": ref_report.get("mean_effective_batch_size", 0.0),
+        "triton_avg_batch": triton_report.get("mean_effective_batch_size", 0.0),
+    }
+
+
+
+
+def _save_ab_results(all_pairs, derived_metrics_list, correctness_list,
+                     environment_data, result_dir, requests_data):
+    """Save all A/B experiment results to the result directory."""
+    import os, json, csv
+
+    # 1. raw_results.json - clean reports (remove _output_token_ids)
+    clean_pairs = []
+    for pair in all_pairs:
+        cp = {
+            "concurrency": pair["concurrency"],
+            "order": pair.get("order", ""),
+            "repeat": pair.get("repeat", 0),
+            "reference": {k: v for k, v in pair["reference"].items() if k != "_output_token_ids"},
+            "triton": {k: v for k, v in pair["triton"].items() if k != "_output_token_ids"},
+            "derived_metrics": pair.get("derived_metrics", {}),
+            "correctness": pair.get("correctness", {}),
+        }
+        clean_pairs.append(cp)
+    with open(os.path.join(result_dir, "raw_results.json"), "w") as f:
+        json.dump(clean_pairs, f, indent=2, default=str)
+
+    # 2. environment.json
+    with open(os.path.join(result_dir, "environment.json"), "w") as f:
+        json.dump(environment_data, f, indent=2, default=str)
+
+    # 3. correctness.json
+    with open(os.path.join(result_dir, "correctness.json"), "w") as f:
+        json.dump(correctness_list, f, indent=2, default=str)
+
+    # 4. summary.csv
+    csv_fields = [
+        "concurrency", "order",
+        "ref_throughput_req", "tri_throughput_req", "speedup_req",
+        "ref_throughput_tok", "tri_throughput_tok", "speedup_tok",
+        "throughput_uplift_pct", "tpot_reduction_pct",
+        "ref_avg_tpot_ms", "tri_avg_tpot_ms",
+        "ref_p50_tpot_ms", "tri_p50_tpot_ms",
+        "ref_avg_ttft_ms", "tri_avg_ttft_ms",
+        "ref_avg_e2e_ms", "tri_avg_e2e_ms",
+        "ref_peak_gpu_mem_mb", "tri_peak_gpu_mem_mb",
+        "ref_wall_time_s", "tri_wall_time_s",
+        "ref_avg_batch", "tri_avg_batch",
+        "correctness_pass", "correctness_exact",
+    ]
+    csv_path = os.path.join(result_dir, "summary.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=csv_fields)
+        writer.writeheader()
+        for dm in derived_metrics_list:
+            correctness = dm.get("correctness", {})
+            writer.writerow({
+                "concurrency": dm.get("concurrency", ""),
+                "order": dm.get("order", ""),
+                "ref_throughput_req": dm.get("ref_throughput_req", ""),
+                "tri_throughput_req": dm.get("tri_throughput_req", ""),
+                "speedup_req": dm.get("throughput_speedup_req", ""),
+                "ref_throughput_tok": dm.get("ref_throughput_tok", ""),
+                "tri_throughput_tok": dm.get("tri_throughput_tok", ""),
+                "speedup_tok": dm.get("throughput_speedup_tok", ""),
+                "throughput_uplift_pct": dm.get("throughput_uplift_pct", ""),
+                "tpot_reduction_pct": dm.get("tpot_reduction_pct", ""),
+                "ref_avg_tpot_ms": dm.get("ref_avg_tpot_ms", ""),
+                "tri_avg_tpot_ms": dm.get("triton_avg_tpot_ms", ""),
+                "ref_p50_tpot_ms": dm.get("ref_p50_tpot_ms", ""),
+                "tri_p50_tpot_ms": dm.get("triton_p50_tpot_ms", ""),
+                "ref_avg_ttft_ms": dm.get("ref_avg_ttft_ms", ""),
+                "tri_avg_ttft_ms": dm.get("triton_avg_ttft_ms", ""),
+                "ref_avg_e2e_ms": dm.get("ref_avg_e2e_ms", ""),
+                "tri_avg_e2e_ms": dm.get("triton_avg_e2e_ms", ""),
+                "ref_peak_gpu_mem_mb": dm.get("ref_peak_gpu_mem_mb", ""),
+                "tri_peak_gpu_mem_mb": dm.get("triton_peak_gpu_mem_mb", ""),
+                "ref_wall_time_s": dm.get("ref_wall_time_s", ""),
+                "tri_wall_time_s": dm.get("triton_wall_time_s", ""),
+                "ref_avg_batch": dm.get("ref_avg_batch", ""),
+                "tri_avg_batch": dm.get("triton_avg_batch", ""),
+                "correctness_pass": correctness.get("correctness_pass", False),
+                "correctness_exact": correctness.get("exact_matches", 0),
+            })
+    print(f"  Summary CSV saved to {csv_path}")
+
+    # 5. summary.md
+    _save_ab_markdown(all_pairs, derived_metrics_list, correctness_list,
+                      environment_data, result_dir)
+
+    # 6. commands.sh
+    _save_ab_commands(result_dir)
+
+    # 7. git_status.txt
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+        with open(os.path.join(result_dir, "git_status.txt"), "w") as f:
+            f.write(result.stdout)
+    except Exception:
+        pass
+
+    # 8. Plots
+    try:
+        _generate_ab_plots(derived_metrics_list, environment_data, result_dir)
+    except ImportError:
+        print("  matplotlib not available, skipping plots")
+    except Exception as e:
+        print(f"  Plot generation failed: {e}")
+
+
+def _save_ab_commands(result_dir):
+    """Save the shell command used to run the experiment."""
+    import sys, os
+    with open(os.path.join(result_dir, "commands.sh"), "w") as f:
+        f.write("#!/usr/bin/env bash\n")
+        f.write(f"# A/B Experiment - {os.path.basename(result_dir)}\n")
+        f.write(f"# Command: {' '.join(sys.argv)}\n")
+        f.write(f"# Timestamp: {__import__('time').strftime('%Y-%m-%dT%H:%M:%S')}\n")
+        f.write("set -x\n")
+        f.write(f"{' '.join(sys.argv)}\n")
+    os.chmod(os.path.join(result_dir, "commands.sh"), 0o755)
+
+
+def _save_ab_markdown(all_pairs, derived_metrics_list, correctness_list,
+                      env, result_dir):
+    """Generate Markdown summary for A/B experiment."""
+    import os
+    md_path = os.path.join(result_dir, "summary.md")
+    model_name = os.path.basename(env.get("model_path", "unknown"))
+    gpu_name = env.get("gpu", "unknown")
+
+    with open(md_path, "w") as f:
+        f.write("# Continuous Batching Backend A/B Experiment\n\n")
+        f.write("Reference Attention vs Triton Paged Decode Attention\n\n")
+        f.write(f"- **Model**: {model_name}\n")
+        f.write(f"- **GPU**: {gpu_name}\n")
+        f.write(f"- **PyTorch**: {env.get('pytorch_version', '?')}\n")
+        f.write(f"- **dtype**: float16\n")
+        f.write(f"- **Git commit**: {env.get('git_commit', '?')}\n")
+        f.write(f"- **Working tree dirty**: {env.get('git_dirty', '?')}\n")
+        f.write(f"- **Timestamp**: {env.get('timestamp', '?')}\n")
+        f.write(f"- **Requests per run**: {env.get('num_requests', '?')}\n")
+        f.write(f"- **GPU blocks**: {env.get('num_gpu_blocks', '?')}\n\n")
+        f.write("---\n\n")
+
+        # Overview table
+        f.write("## Throughput Comparison\n\n")
+        f.write("| Concurrency | Order | Ref Req/s | Tri Req/s | Speedup | "
+                "Ref Tok/s | Tri Tok/s | Speedup | Uplift % | "
+                "TPOT Reduction % | Correct |\n")
+        f.write("|---|---|---|---|---|---|---|---|---|---|---|\n")
+        for dm in derived_metrics_list:
+            c = dm.get("correctness", {})
+            f.write(
+                f"| {dm.get('concurrency', '?')} "
+                f"| {dm.get('order', '?')} "
+                f"| {dm.get('ref_throughput_req', 0):.2f} "
+                f"| {dm.get('tri_throughput_req', 0):.2f} "
+                f"| {dm.get('throughput_speedup_req', 0):.2f}x "
+                f"| {dm.get('ref_throughput_tok', 0):.1f} "
+                f"| {dm.get('tri_throughput_tok', 0):.1f} "
+                f"| {dm.get('throughput_speedup_tok', 0):.2f}x "
+                f"| {dm.get('throughput_uplift_pct', 0):.1f}% "
+                f"| {dm.get('tpot_reduction_pct', 0):.1f}% "
+                f"| {'PASS' if c.get('correctness_pass') else 'FAIL'}"
+                f" ({c.get('exact_matches', 0)}/{c.get('total_ref_requests', 0)}) |\n"
+            )
+        f.write("\n")
+
+        # Latency table
+        f.write("## Latency Comparison\n\n")
+        f.write("| Concurrency | Ref TPOT50 | Tri TPOT50 | Ref TPOT95 | Tri TPOT95 | "
+                "Ref TTFT50 | Tri TTFT50 | Ref E2E50 | Tri E2E50 |\n")
+        f.write("|---|---|---|---|---|---|---|---|---|\n")
+        for dm in derived_metrics_list:
+            f.write(
+                f"| {dm.get('concurrency', '?')} "
+                f"| {dm.get('ref_p50_tpot_ms', 0):.2f} "
+                f"| {dm.get('triton_p50_tpot_ms', 0):.2f} "
+                f"| {dm.get('ref_p95_tpot_ms', 0):.2f} "
+                f"| {dm.get('triton_p95_tpot_ms', 0):.2f} "
+                f"| {dm.get('ref_avg_ttft_ms', 0):.1f} "
+                f"| {dm.get('triton_avg_ttft_ms', 0):.1f} "
+                f"| {dm.get('ref_avg_e2e_ms', 0):.1f} "
+                f"| {dm.get('triton_avg_e2e_ms', 0):.1f} |\n"
+            )
+        f.write("\n")
+
+        # Memory table
+        f.write("## GPU Memory\n\n")
+        f.write("| Concurrency | Ref Peak (MB) | Tri Peak (MB) |\n")
+        f.write("|---|---|---|\n")
+        for dm in derived_metrics_list:
+            f.write(
+                f"| {dm.get('concurrency', '?')} "
+                f"| {dm.get('ref_peak_gpu_mem_mb', 0):.1f} "
+                f"| {dm.get('triton_peak_gpu_mem_mb', 0):.1f} |\n"
+            )
+        f.write("\n")
+
+        # Correctness details
+        f.write("## Correctness\n\n")
+        all_pass = all(c.get("correctness_pass", False) for c in correctness_list)
+        f.write(f"**Overall Correctness: {'PASS' if all_pass else 'FAIL'}**\n\n")
+        for i, c in enumerate(correctness_list):
+            f.write(f"### Run {i + 1} (concurrency={c.get('concurrency', '?')}, order={c.get('order', '?')})\n\n")
+            f.write(f"- Exact matches: {c.get('exact_matches', 0)}/{c.get('total_ref_requests', 0)}\n")
+            f.write(f"- Mismatches: {c.get('total_mismatches', 0)}\n")
+            details = c.get("details", [])
+            if details:
+                f.write("- Mismatch details:\n")
+                for d in details[:10]:
+                    f.write(f"  - {d['request_id']}: ref={d['ref_tokens']}tok vs tri={d['triton_tokens']}tok")
+                    if d.get("first_diff_pos") is not None:
+                        f.write(f", first diff at pos {d['first_diff_pos']}")
+                    f.write("\n")
+                if len(details) > 10:
+                    f.write(f"  - ... and {len(details) - 10} more\n")
+            f.write("\n")
+
+        # Workload details
+        f.write("## Workload\n\n")
+        f.write(f"| Metric | Value |\n")
+        f.write(f"|---|---|\n")
+        f.write(f"| Total requests | {env.get('num_requests', '?')} |\n")
+        f.write(f"| Concurrency levels | {env.get('concurrency_levels', '?')} |\n")
+        f.write(f"| Repeats | {env.get('repeats', 1)} |\n")
+        f.write(f"| Workload | {env.get('workload_desc', 'default')} |\n")
+        f.write("\n")
+
+        print(f"  Summary MD saved to {md_path}")
+
+
+def _generate_ab_plots(derived_metrics_list, env, result_dir):
+    """Generate A/B comparison plots."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import os
+    import numpy as np
+
+    plots_dir = os.path.join(result_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+    model_name = os.path.basename(env.get("model_path", "unknown"))
+
+    if not derived_metrics_list:
+        return
+
+    conc_levels = sorted(set(dm.get("concurrency", 0) for dm in derived_metrics_list))
+
+    # 1. Throughput comparison (req/s)
+    plt.figure(figsize=(8, 5))
+    ref_rps = []
+    tri_rps = []
+    for c in conc_levels:
+        vals_ref = [dm.get("ref_throughput_req", 0) for dm in derived_metrics_list if dm.get("concurrency") == c]
+        vals_tri = [dm.get("tri_throughput_req", 0) for dm in derived_metrics_list if dm.get("concurrency") == c]
+        ref_rps.append(sum(vals_ref) / len(vals_ref) if vals_ref else 0)
+        tri_rps.append(sum(vals_tri) / len(vals_tri) if vals_tri else 0)
+    x = range(len(conc_levels))
+    width = 0.35
+    plt.bar([i - width/2 for i in x], ref_rps, width, label="Reference (SDPA)", color="orange", alpha=0.8)
+    plt.bar([i + width/2 for i in x], tri_rps, width, label="Triton Paged Decode", color="steelblue", alpha=0.8)
+    plt.xlabel("Concurrency")
+    plt.ylabel("Throughput (req/s)")
+    plt.title(f"Request Throughput: Reference vs Triton\n{model_name}, float16")
+    plt.xticks(list(x), [str(c) for c in conc_levels])
+    plt.legend()
+    plt.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "throughput_comparison.png"), dpi=150)
+    plt.close()
+
+    # 2. TPOT comparison
+    plt.figure(figsize=(8, 5))
+    ref_tpot = []
+    tri_tpot = []
+    for c in conc_levels:
+        vals_ref = [dm.get("ref_avg_tpot_ms", 0) for dm in derived_metrics_list if dm.get("concurrency") == c]
+        vals_tri = [dm.get("triton_avg_tpot_ms", 0) for dm in derived_metrics_list if dm.get("concurrency") == c]
+        ref_tpot.append(sum(vals_ref) / len(vals_ref) if vals_ref else 0)
+        tri_tpot.append(sum(vals_tri) / len(vals_tri) if vals_tri else 0)
+    plt.bar([i - width/2 for i in x], ref_tpot, width, label="Reference (SDPA)", color="orange", alpha=0.8)
+    plt.bar([i + width/2 for i in x], tri_tpot, width, label="Triton Paged Decode", color="steelblue", alpha=0.8)
+    plt.xlabel("Concurrency")
+    plt.ylabel("Avg TPOT (ms)")
+    plt.title(f"TPOT: Reference vs Triton\n{model_name}, float16")
+    plt.xticks(list(x), [str(c) for c in conc_levels])
+    plt.legend()
+    plt.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "tpot_comparison.png"), dpi=150)
+    plt.close()
+
+    # 3. Speedup heatmap (as bar chart)
+    plt.figure(figsize=(8, 5))
+    speedups = []
+    for c in conc_levels:
+        vals = [dm.get("throughput_speedup_req", 0) for dm in derived_metrics_list if dm.get("concurrency") == c]
+        speedups.append(sum(vals) / len(vals) if vals else 1.0)
+    colors_speedup = ["green" if s >= 1.0 else "red" for s in speedups]
+    plt.bar(list(x), speedups, color=colors_speedup, alpha=0.8)
+    plt.axhline(y=1.0, color="gray", linestyle="--", linewidth=1)
+    plt.xlabel("Concurrency")
+    plt.ylabel("Speedup (Triton / Reference)")
+    plt.title(f"Throughput Speedup vs Concurrency\n{model_name}, float16")
+    plt.xticks(list(x), [str(c) for c in conc_levels])
+    plt.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "speedup_comparison.png"), dpi=150)
+    plt.close()
+
+    # 4. GPU memory comparison
+    plt.figure(figsize=(8, 5))
+    ref_mem = []
+    tri_mem = []
+    for c in conc_levels:
+        vals_ref = [dm.get("ref_peak_gpu_mem_mb", 0) for dm in derived_metrics_list if dm.get("concurrency") == c]
+        vals_tri = [dm.get("triton_peak_gpu_mem_mb", 0) for dm in derived_metrics_list if dm.get("concurrency") == c]
+        ref_mem.append(sum(vals_ref) / len(vals_ref) if vals_ref else 0)
+        tri_mem.append(sum(vals_tri) / len(vals_tri) if vals_tri else 0)
+    plt.bar([i - width/2 for i in x], ref_mem, width, label="Reference", color="orange", alpha=0.8)
+    plt.bar([i + width/2 for i in x], tri_mem, width, label="Triton", color="steelblue", alpha=0.8)
+    plt.xlabel("Concurrency")
+    plt.ylabel("Peak GPU Memory (MB)")
+    plt.title(f"GPU Memory: Reference vs Triton\n{model_name}, float16")
+    plt.xticks(list(x), [str(c) for c in conc_levels])
+    plt.legend()
+    plt.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "memory_comparison.png"), dpi=150)
+    plt.close()
+
+    print(f"  Plots saved to {plots_dir}")
+
+
+
+def _cleanup_gpu(engine=None):
+    """Delete engine and free GPU memory."""
+    import gc
+    import torch
+    if engine is not None:
+        del engine
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
+
+
+def _run_ab_experiment(args):
+    """Run the full A/B experiment: Reference vs Triton attention backends."""
+    import os, json, torch
+    from transformers import AutoTokenizer
+
+    model_path = args.model_path or _auto_model_path()
+    if not model_path or not os.path.isdir(model_path):
+        print("ERROR: Valid model path is required for A/B experiment.")
+        print("Use --model-path to specify the local model directory.")
+        sys.exit(1)
+    print(f"  Model path: {model_path}")
+
+    num_gpu_blocks = args.num_gpu_blocks or _calc_gpu_blocks(model_path)
+    print(f"  KV cache blocks: {num_gpu_blocks}")
+
+    result_dir, dirname = _create_ab_result_dir(args.output_dir)
+    print(f"  Result directory: {result_dir}")
+
+    env = _compute_metadata()
+    env["model_path"] = model_path
+    env["dtype"] = "float16"
+    env["num_gpu_blocks"] = num_gpu_blocks
+    env["seed"] = 42
+    env["args"] = vars(args)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+
+    num_requests = args.requests
+    env["num_requests"] = num_requests
+    env["concurrency_levels"] = args.concurrency
+    env["repeats"] = args.repeats
+
+    if args.homogeneous_ctx:
+        if args.homogeneous_out:
+            env["workload_desc"] = "homogeneous_ctx={}_out={}".format(args.homogeneous_ctx, args.homogeneous_out)
+        else:
+            env["workload_desc"] = "homogeneous_ctx={}".format(args.homogeneous_ctx)
+    elif args.ragged_ctx:
+        env["workload_desc"] = "ragged_ctx"
+    elif args.ragged_out:
+        env["workload_desc"] = "ragged_out"
+    else:
+        env["workload_desc"] = "default_mixed"
+
+    requests_data = _generate_ab_request_prompts(
+        tokenizer, num_requests, seed=42,
+        homogeneous_ctx=args.homogeneous_ctx,
+        homogeneous_out=args.homogeneous_out,
+        ragged_ctx=args.ragged_ctx,
+        ragged_out=args.ragged_out,
+    )
+    print(f"\n  Generated {len(requests_data)} requests")
+    avg_in = sum(r["actual_input_tokens"] for r in requests_data) / len(requests_data)
+    avg_out = sum(r["output_length"] for r in requests_data) / len(requests_data)
+    print(f"  Avg input tokens: {avg_in:.0f}")
+    print(f"  Avg output tokens: {avg_out:.0f}")
+    print(f"  Workload: {env['workload_desc']}")
+
+    concurrency_levels = sorted(args.concurrency)
+    all_pairs = []
+    derived_metrics_list = []
+    correctness_list = []
+
+    for order_idx, concurrency in enumerate(concurrency_levels):
+        # Free GPU from previous iteration's engines
+        _cleanup_gpu()
+
+        print("\n" + "=" * 60)
+        print("CONCURRENCY = {}".format(concurrency))
+        print("=" * 60)
+
+        if order_idx % 2 == 0:
+            first_backend, second_backend = "reference", "triton"
+            first_label, second_label = "Reference (1st)", "Triton (2nd)"
+            order_str = "ref_first"
+        else:
+            first_backend, second_backend = "triton", "reference"
+            first_label, second_label = "Triton (1st)", "Reference (2nd)"
+            order_str = "tri_first"
+
+        print(f"\n  Order: {first_label} -> {second_label}\n")
+
+        # Warmup with first backend
+        print(f"  Warmup...", end=" ", flush=True)
+        warmup_config = _build_ab_config(
+            concurrency=concurrency,
+            model_path=model_path,
+            num_gpu_blocks=num_gpu_blocks,
+            attention_backend=first_backend,
+        )
+        try:
+            warmup_engine = LLMEngine(warmup_config)
+            wu_data = requests_data[:min(4, len(requests_data))]
+            for req in wu_data:
+                warmup_engine.add_request(req["prompt"], max_new_tokens=req["output_length"])
+            warmup_engine.run_until_done()
+            print("done")
+        except Exception as e:
+            print(f"warmup failed ({e}), continuing")
+        finally:
+            _cleanup_gpu()
+
+        for rep in range(args.repeats):
+            print(f"\n  Repeat {rep + 1}/{args.repeats}")
+
+            # First backend
+            print(f"    Running {first_label}...", end=" ", flush=True)
+            result1 = _run_ab_single_backend(
+                concurrency=concurrency,
+                requests_data=requests_data,
+                model_path=model_path,
+                num_gpu_blocks=num_gpu_blocks,
+                attention_backend=first_backend,
+                label=first_label,
+            )
+            if "error" in result1:
+                print(f"ERROR: {result1['error']}")
+                _cleanup_gpu()
+                continue
+
+            rps1 = result1["throughput_req_per_sec"]
+            tpot1 = result1.get("p50_tpot_ms", 0)
+            print(f"{result1['total_requests']} req, {rps1:.2f} req/s, TPOT P50={tpot1:.2f}ms")
+
+            # Free GPU memory before loading second backend
+            _cleanup_gpu()
+
+            # Second backend
+            print(f"    Running {second_label}...", end=" ", flush=True)
+            result2 = _run_ab_single_backend(
+                concurrency=concurrency,
+                requests_data=requests_data,
+                model_path=model_path,
+                num_gpu_blocks=num_gpu_blocks,
+                attention_backend=second_backend,
+                label=second_label,
+            )
+            if "error" in result2:
+                print(f"ERROR: {result2['error']}")
+                _cleanup_gpu()
+                continue
+
+            rps2 = result2["throughput_req_per_sec"]
+            tpot2 = result2.get("p50_tpot_ms", 0)
+            print(f"{result2['total_requests']} req, {rps2:.2f} req/s, TPOT P50={tpot2:.2f}ms")
+
+            if first_backend == "reference":
+                ref_result, tri_result = result1, result2
+            else:
+                ref_result, tri_result = result2, result1
+
+            # Correctness
+            ref_token_ids = ref_result.get("_output_token_ids", {})
+            tri_token_ids = tri_result.get("_output_token_ids", {})
+            correctness = _compare_correctness(
+                ref_token_ids, tri_token_ids,
+                list(ref_token_ids.keys()), list(tri_token_ids.keys()),
+            )
+            correctness["concurrency"] = concurrency
+            correctness["order"] = order_str
+            correctness_list.append(correctness)
+            cpass = "PASS" if correctness["correctness_pass"] else "FAIL"
+            print(f"    Correctness: {cpass} ({correctness['exact_matches']}/{correctness['total_ref_requests']})")
+
+            # Derived metrics
+            derived = _compute_ab_derived_metrics(ref_result, tri_result)
+            derived["order"] = order_str
+            derived["correctness"] = correctness
+            derived["ref_throughput_req"] = ref_result.get("throughput_req_per_sec", 0)
+            derived["tri_throughput_req"] = tri_result.get("throughput_req_per_sec", 0)
+            derived["ref_throughput_tok"] = ref_result.get("throughput_tok_per_sec", 0)
+            derived["tri_throughput_tok"] = tri_result.get("throughput_tok_per_sec", 0)
+            derived["ref_avg_e2e_ms"] = ref_result.get("avg_e2e_ms", 0)
+            derived["triton_avg_e2e_ms"] = tri_result.get("avg_e2e_ms", 0)
+            derived["ref_p95_tpot_ms"] = ref_result.get("p95_tpot_ms", 0)
+            derived["triton_p95_tpot_ms"] = tri_result.get("p95_tpot_ms", 0)
+            derived_metrics_list.append(derived)
+
+            all_pairs.append({
+                "concurrency": concurrency,
+                "order": order_str,
+                "repeat": rep,
+                "reference": ref_result,
+                "triton": tri_result,
+            })
+
+            speedup = derived["throughput_speedup_req"]
+            tpot_red = derived["tpot_reduction_pct"]
+            print(f"    Speedup: {speedup:.2f}x req/s, {tpot_red:.1f}% TPOT reduction")
+
+    print("\n" + "=" * 60)
+    print("SAVING RESULTS")
+    print("=" * 60 + "\n")
+    _save_ab_results(all_pairs, derived_metrics_list, correctness_list,
+                     env, result_dir, requests_data)
+
+    print("\n" + "=" * 60)
+    print("A/B EXPERIMENT SUMMARY")
+    print("=" * 60 + "\n")
+    hdr = "{:<8} {:<14} {:<12} {:<12} {:<10} {:<12} {:<10}".format(
+        "Conc", "Order", "Ref Req/s", "Tri Req/s", "Speedup", "TPOT Red%", "Correct")
+    print(hdr)
+    print("-" * 78)
+    for dm in derived_metrics_list:
+        c = dm.get("correctness", {})
+        cstr = "PASS" if c.get("correctness_pass") else "FAIL"
+        print("{:<8} {:<14} {:<12.2f} {:<12.2f} {:<10.2f}x {:<12.1f} {:<10}".format(
+            dm.get('concurrency', 0), dm.get('order', ''),
+            dm.get('ref_throughput_req', 0), dm.get('tri_throughput_req', 0),
+            dm.get('throughput_speedup_req', 0), dm.get('tpot_reduction_pct', 0),
+            cstr))
+
+    print(f"\nResults saved to: {result_dir}")
+    print("Done!")
+
+
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Continuous Batching Benchmark")
@@ -644,7 +1589,23 @@ def build_parser():
                         help="Run quick smoke test before full benchmark")
     parser.add_argument("--skip-warmup", action="store_true",
                         help="Skip GPU warmup before benchmark")
+    # A/B experiment flags
+    parser.add_argument("--ab-test", action="store_true",
+                        help="Run Reference vs Triton attention backend A/B comparison")
+    parser.add_argument("--attention-backend", type=str, default=None,
+                        choices=["reference", "triton"],
+                        help="Single attention backend mode (override for manual runs)")
+    parser.add_argument("--homogeneous-ctx", type=int, default=None,
+                        help="All requests have this exact context token length")
+    parser.add_argument("--homogeneous-out", type=int, default=None,
+                        help="All requests have this exact output token length")
+    parser.add_argument("--ragged-ctx", action="store_true",
+                        help="Wide uniform distribution of context lengths (32-1024)")
+    parser.add_argument("--ragged-out", action="store_true",
+                        help="Wide uniform distribution of output lengths (8-128)")
     return parser
+
+
 
 
 def _auto_model_path():
@@ -683,6 +1644,16 @@ def _calc_gpu_blocks(model_path: str, block_size: int = 16) -> int:
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    # A/B experiment dispatch
+    if args.ab_test:
+        _run_ab_experiment(args)
+        return
+
+    # Single backend mode for manual testing
+    if args.attention_backend:
+        print(f"\n  Using paged executor with attention backend: {args.attention_backend}\n")
+        args.executor = "paged"
 
     if args.executor == "fake":
         print("\n  Using fake executor (no GPU needed, simulation only)")

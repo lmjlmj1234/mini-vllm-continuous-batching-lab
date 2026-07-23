@@ -11,7 +11,7 @@ Status: ready-for-agent
 **English:**
 LLM serving systems like vLLM achieve high GPU utilisation through Continuous Batching — a technique that allows new requests to preempt the decode batch at every token-generation step. However, the production codebases that implement this are vast (vLLM alone is 100k+ lines), making it difficult for engineers and students to understand the core architecture.
 
-There is no concise, educational reference that:
+There is no concise reference that:
 - Breaks down Continuous Batching into its fundamental modules (Sequence, Scheduler, KV Cache, Executor, Engine)
 - Shows how those modules interact across a single engine step
 - Provides a real (Qwen2-0.5B) executor alongside a pure-Python fake for comparative study
@@ -22,11 +22,11 @@ This project fills that gap with a deliberately minimal implementation that mirr
 **中文：**
 像 vLLM 这样的 LLM 服务系统通过连续批处理（Continuous Batching）实现高 GPU 利用率——这种技术允许新请求在每个 token 生成步骤抢占 decode batch。然而，实现这一技术的生产代码库非常庞大（仅 vLLM 就超过 10 万行），导致工程师和学生难以理解其核心架构。
 
-目前缺少一个简洁的教学参考，能够：
+目前缺少一个简洁的参考实现，能够：
 - 将连续批处理分解为各个基础模块（Sequence、Scheduler、KV Cache、Executor、Engine）
 - 展示这些模块在单个引擎步骤中的交互方式
-- 同时提供真实（Qwen2-0.5B）执行器和纯 Python 假执行器，方便对比学习
-- 将服务层关注点与核心引擎关注点分离，使两者可以独立学习
+- 同时提供真实（Qwen2-0.5B）执行器和纯 Python 假执行器，方便对比验证
+- 将服务层关注点与核心引擎关注点分离，使两者可以独立理解
 
 本项目的目标是提供一个刻意保持极简的实现，同时镜像 vLLM 的模块边界、命名和架构。
 
@@ -52,9 +52,9 @@ All three phases share the same core engine API — serving is an extension, not
 
 ## User Stories / 用户故事
 
-1. **As a student learning LLM serving systems**, I want to run a minimal end-to-end engine demo with zero dependencies, so that I can see Continuous Batching in action without setting up GPU infrastructure.
+1. **As a developer evaluating LLM serving systems**, I want to run a minimal end-to-end engine demo with zero dependencies, so that I can see Continuous Batching in action without setting up GPU infrastructure.
 
-2. **作为一名学习 LLM 服务系统的学生**，我希望运行一个零依赖的端到端引擎演示，从而无需配置 GPU 基础设施就能看到连续批处理的实际运行。
+2. **作为 LLM 服务系统的开发者**，我希望运行一个零依赖的端到端引擎演示，从而无需配置 GPU 基础设施就能看到连续批处理的实际运行。
 
 3. **As an engineer studying vLLM internals**, I want a module-by-module mapping to vLLM's source, so that I can transfer my understanding directly to the production codebase.
 
@@ -132,17 +132,17 @@ All three phases share the same core engine API — serving is an extension, not
 
 - **SequenceGroup / Sequence 分离：** SequenceGroup 拥有用户级请求元数据（prompt、采样参数、到达时间）。每个 Sequence 拥有自己的生成状态（token 缓冲区、KV 块表、prefill 游标、生成时间戳）。队列池保存 SequenceGroup；调度器和 ScheduleResult 以组为单位操作。这镜像了 vLLM 的数据模型，并为未来的并行生成（每个请求多个 sequence）提供了支持。
 
-- **On-demand block allocation:** Sequences start with zero blocks. Blocks are allocated one at a time through `BlockManager.ensure_block()`, called by the executor during prefill and decode. This differs from vLLM's eager allocation and is a deliberate simplification for educational clarity — the trade-off is lower memory waste at the cost of more frequent allocator calls.
+- **On-demand block allocation:** Sequences start with zero blocks. Blocks are allocated one at a time through `BlockManager.ensure_block()`, called by the executor during prefill and decode. This differs from vLLM's eager allocation and is a deliberate simplification for clarity — the trade-off is lower memory waste at the cost of more frequent allocator calls.
 
-- **按需块分配：** Sequence 从零个块开始。块通过 `BlockManager.ensure_block()` 逐个分配，由执行器在 prefill 和 decode 期间调用。这与 vLLM 的预分配不同，是为了教学清晰性而刻意简化——代价是更频繁的分配器调用，换来的好处是更低的内存浪费。
+- **按需块分配：** Sequence 从零个块开始。块通过 `BlockManager.ensure_block()` 逐个分配，由执行器在 prefill 和 decode 期间调用。这与 vLLM 的预分配不同，是为了清晰性而刻意简化——代价是更频繁的分配器调用，换来的好处是更低的内存浪费。
 
 - **Prefix Cache with read-only probe:** `BlockManager.probe_prefix_cache()` is called by the scheduler before budget computation to determine how many prompt tokens are already cached — without modifying reference counts. This allows the scheduler to make admission decisions without side effects. Only when `allocate_for_seq()` confirms admission does the cache share the matching blocks via `increment_ref()`.
 
 - **带只读探测的前缀缓存：** `BlockManager.probe_prefix_cache()` 在预算计算前被调度器调用，用于确定有多少 prompt token 已缓存——且不修改引用计数。这使得调度器可以在无副作用的情况下做准入决策。只有 `allocate_for_seq()` 确认准入后，缓存才通过 `increment_ref()` 共享匹配的块。
 
-- **Executor Protocol:** The `Executor` abstract protocol defines a uniform interface (tokenize, prefill, decode, cleanup_sequence, KV callbacks) that both `FakeModelExecutor` and `QwenExecutor` implement. This enables phase-by-phase learning — understand the algorithm with the fake executor, then swap in the real model without changing any engine code.
+- **Executor Protocol:** The `Executor` abstract protocol defines a uniform interface (tokenize, prefill, decode, cleanup_sequence, KV callbacks) that both `FakeModelExecutor` and `QwenExecutor` implement. This enables phased development — understand the algorithm with the fake executor, then swap in the real model without changing any engine code.
 
-- **Executor 协议：** `Executor` 抽象协议定义了一个统一接口（tokenize、prefill、decode、cleanup_sequence、KV 回调），`FakeModelExecutor` 和 `QwenExecutor` 都实现了该接口。这使得学习者可以分阶段学习——先用假执行器理解算法，然后切换为真实模型而不改动任何引擎代码。
+- **Executor 协议：** `Executor` 抽象协议定义了一个统一接口（tokenize、prefill、decode、cleanup_sequence、KV 回调），`FakeModelExecutor` 和 `QwenExecutor` 都实现了该接口。这支持分阶段开发——先用假执行器验证算法，然后切换为真实模型而不改动任何引擎代码。
 
 - **MetricsCollector:** Centralized metrics collection — not log lines scattered across modules. Tracks TTFT (first_token_time − arrival_time), TPOT ((finish_time − first_token_time) / max(output_tokens−1, 1)), throughput (req/s, tok/s for both wall-clock and active-time), KV utilization (peak and average), block utilization (tokens per block), and scheduler latency.
 
@@ -152,9 +152,9 @@ All three phases share the same core engine API — serving is an extension, not
 
 - **服务层作为独立扩展：** 服务层（`mini_vllm/serving/`）是一个独立的包，仅通过 `LLMEngine` 公共 API 驱动引擎。它处理网络关注点（HTTP、SSE、WebSocket 生命周期）和服务治理（速率限制、准入控制）。这种分离确保核心引擎测试不需要 HTTP 基础设施，服务测试也可以 mock 引擎。
 
-- **StageProfiler for educational profiling:** A lightweight (pure Python `time.time()` + context managers) profiler that decomposes end-to-end latency into stages. Uses `record_raw()` for direct timing injection (key for `request_queue_waiting` and `kv_cache_allocation` which are measured outside the step function) and context managers for `scheduler_step`, `prefill`, `decode`, `executor_forward`, `metrics_update`. Outputs sorted-by-total-time report with bottleneck detection hints.
+- **StageProfiler for latency breakdown profiling:** A lightweight (pure Python `time.time()` + context managers) profiler that decomposes end-to-end latency into stages. Uses `record_raw()` for direct timing injection (key for `request_queue_waiting` and `kv_cache_allocation` which are measured outside the step function) and context managers for `scheduler_step`, `prefill`, `decode`, `executor_forward`, `metrics_update`. Outputs sorted-by-total-time report with bottleneck detection hints.
 
-- **StageProfiler 教学性能分析器：** 一个轻量级（纯 Python `time.time()` + context manager）分析器，将端到端延迟分解为各个阶段。使用 `record_raw()` 直接注入计时（对于 `request_queue_waiting` 和 `kv_cache_allocation` 这些在 step 函数外部测量的阶段关键），使用 context manager 包裹 `scheduler_step`、`prefill`、`decode`、`executor_forward`、`metrics_update`。输出按总时间排序的报告，附带瓶颈检测提示。
+- **StageProfiler 阶段耗时分析器：** 一个轻量级（纯 Python `time.time()` + context manager）分析器，将端到端延迟分解为各个阶段。使用 `record_raw()` 直接注入计时（对于 `request_queue_waiting` 和 `kv_cache_allocation` 这些在 step 函数外部测量的阶段关键），使用 context manager 包裹 `scheduler_step`、`prefill`、`decode`、`executor_forward`、`metrics_update`。输出按总时间排序的报告，附带瓶颈检测提示。
 
 ### Module interfaces / 模块接口
 
@@ -184,7 +184,7 @@ The project tests at **three seams**, each testing at the highest practical leve
 | **Engine integration seam** (`test_engine.py`) | End-to-end correctness: `add_request` → step loop → output collection, continuous batching with staggered arrivals, OOM recovery, KV cache writes and fake logit dependence on cache content | Test helper `_engine()` creates a real `LLMEngine` with real FakeModelExecutor; tests add requests, drive steps, and assert on outputs, token counts, and engine state |
 | **Serving integration seam** (`test_serving_layer.py`, `test_fault_injection.py`) | HTTP SSE streaming, RPM/TPM rate limiting, request cancellation, timeout, client disconnect lifecycle, OOM/queue exhaust/block exhaust recovery | Tests use a real HTTP server with `httpx` client; fault injection tests exercise every failure mode and verify resource cleanup |
 
-These seams mirror the learning path: start with a single module, combine into the scheduler, integrate with the engine, and finally verify the HTTP layer.
+These seams define a clear development path: start with a single module, combine into the scheduler, integrate with the engine, and finally verify the HTTP layer.
 
 中文：
 本项目在**三个测试接缝**上进行测试，每个接缝都在实际可行的最高集成级别进行测试。指导原则：**只测试外部行为，不测试实现细节**——验证模块产生了什么（输出、状态、指标），而不是它如何在内部编排循环。
@@ -196,12 +196,12 @@ These seams mirror the learning path: start with a single module, combine into t
 | **引擎集成接缝**（`test_engine.py`） | 端到端正确性：`add_request` → step 循环 → 输出收集、有交错到达的连续批处理、OOM 恢复、KV cache 写入和假 logits 对缓存内容的依赖 | 测试辅助函数 `_engine()` 创建一个真实的 `LLMEngine` 加真实的 FakeModelExecutor；测试添加请求、驱动步骤、断言输出、token 计数和引擎状态 |
 | **服务集成接缝**（`test_serving_layer.py`、`test_fault_injection.py`） | HTTP SSE 流式输出、RPM/TPM 速率限制、请求取消、超时、客户端断连生命周期、OOM/队列耗尽/块耗尽恢复 | 测试使用真实的 HTTP 服务器加 `httpx` 客户端；故障注入测试覆盖每种故障模式并验证资源清理 |
 
-这些接缝反映了学习路径：从单一模块开始，组合为调度器，集成到引擎中，最后验证 HTTP 层。
+这些接缝反映了开发路径：从单一模块开始，组合为调度器，集成到引擎中，最后验证 HTTP 层。
 
 ## Out of Scope / 非目标
 
-- **Real GPU kernels (CUDA / PagedAttention CUDA kernel):** The project simulates PagedAttention's memory management but uses fake KV cache values for educational purposes. CUDA kernel development is outside the project's scope.
-- **真正的 GPU kernels（CUDA / PagedAttention CUDA kernel）：** 项目模拟了 PagedAttention 的内存管理，但使用假的 KV cache 值做教学用途。CUDA kernel 开发不在项目范围内。
+- **Real GPU kernels (CUDA / PagedAttention CUDA kernel):** The project simulates PagedAttention's memory management but uses fake KV cache values for simulation purposes. CUDA kernel development is outside the project's scope.
+- **真正的 GPU kernels（CUDA / PagedAttention CUDA kernel）：** 项目模拟了 PagedAttention 的内存管理，但使用假的 KV cache 值做模拟用途。CUDA kernel 开发不在项目范围内。
 - **Preemption / swapping:** GPU memory pressure handling (swapping KV blocks to CPU) is not implemented. The project uses a fixed number of GPU blocks with OOM as the failure mode.
 - **抢占/交换（swap）：** GPU 内存压力处理（将 KV 块交换到 CPU）未实现。项目使用固定数量的 GPU 块，以 OOM 作为故障模式。
 - **Speculative decoding:** Multi-token speculative generation is not implemented.
@@ -210,14 +210,14 @@ These seams mirror the learning path: start with a single module, combine into t
 - **多节点/分布式服务：** 项目为单进程。
 - **Production-grade prefix cache eviction:** The prefix cache only grows — blocks are removed only when their last reference is freed. No LRU/TTL eviction is implemented.
 - **生产级前缀缓存淘汰策略：** 前缀缓存只增不减——块仅在最后一个引用被释放时移除。没有实现 LRU/TTL 淘汰。
-- **Production GPU profiling:** The StageProfiler is for teaching and interview demonstrations, not a replacement for Nsight Systems or PyTorch profiler.
-- **生产级 GPU 性能分析：** StageProfiler 用于教学和面试演示，不是 Nsight Systems 或 PyTorch Profiler 的替代品。
+- **Production GPU profiling:** The StageProfiler is for stage-level latency breakdowns, not a replacement for Nsight Systems or PyTorch profiler.
+- **生产级 GPU 性能分析：** StageProfiler 用于阶段耗时分析，不是 Nsight Systems 或 PyTorch Profiler 的替代品。
 
 ## Further Notes / 补充说明
 
 1. **Learning path:** The project is designed to be studied in phase order. Phase 1 (Core Engine) can be understood without GPU knowledge. Phase 2 adds real-world optimizations one at a time. Phase 3 can be studied independently or skipped entirely.
 
-2. **学习路径：** 项目按阶段顺序设计学习。Phase 1（核心引擎）无需 GPU 知识即可理解。Phase 2 逐一增加生产级优化。Phase 3 可独立学习或完全跳过。
+2. **依赖关系：** 项目按阶段顺序设计。Phase 1（核心引擎）无需 GPU 知识即可理解。Phase 2 逐一增加生产级优化。Phase 3 可独立使用或完全跳过。
 
 3. **Zero-friction start:** `examples/demo_fake_engine.py` requires only Python 3.10+ with zero pip dependencies. This is intentional — a student should see "Hello, world!" output from the Continuous Batching engine within 30 seconds of cloning.
 
@@ -231,6 +231,6 @@ These seams mirror the learning path: start with a single module, combine into t
 
 8. **服务层独立性：** 服务层是 Phase 3 的关注点，刻意设计为可分离的。服务层的变更不应要求核心引擎改变，反之亦然。这在架构上得到保证——服务层仅通过 `LLMEngine.add_request()`、`step()` 和 `cancel_request()` 访问引擎。
 
-9. **Fault injection testing:** The fault injection test suite (`test_fault_injection.py`) is a distinguishing feature of this project. It systematically exercises every resource-exhaustion and lifecycle scenario to verify that the engine recovers cleanly — crucial for interview discussions about production reliability.
+9. **Fault injection testing:** The fault injection test suite (`test_fault_injection.py`) is a distinguishing feature of this project. It systematically exercises every resource-exhaustion and lifecycle scenario to verify that the engine recovers cleanly — crucial for validating production reliability patterns.
 
-10. **故障注入测试：** 故障注入测试套件（`test_fault_injection.py`）是本项目的一个特色功能。它系统地测试每种资源耗尽和生命周期场景，以验证引擎能够干净地恢复——这对面试中讨论生产可靠性至关重要。
+10. **故障注入测试：** 故障注入测试套件（`test_fault_injection.py`）是本项目的一个特色功能。它系统地测试每种资源耗尽和生命周期场景，以验证引擎能够干净地恢复——这对验证生产级可靠性模式至关重要。

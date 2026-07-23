@@ -1,4 +1,4 @@
-# mini-vLLM 项目搭建全过程 — 面试说明
+# mini-vLLM 项目搭建全过程 — Implementation Walkthrough
 
 > 本文档基于当前代码（176 tests passing）、docs、examples、git history 和模块依赖关系，按阶段说明项目如何从零构建。
 > 
@@ -9,7 +9,7 @@
 ## 1. 初始目标和技术边界
 
 ### 目标
-从零复现 vLLM 核心架构（Continuous Batching + PagedAttention + Prefix Cache），深入理解 LLM Serving 引擎的工作机理。不是生产级推理引擎，而是**教育项目**——让你能在单线程中单步 trace 调度和内存分配的全过程。
+从零复现 vLLM 核心架构（Continuous Batching + PagedAttention + Prefix Cache），理解 LLM Serving 引擎的工作机理。不是生产级推理引擎，而是**复现和验证项目**——能在单线程中单步 trace 调度和内存分配的全过程。
 
 ### 技术边界
 - **不写 CUDA / Triton kernel** — PagedAttention 的 GPU kernel 层不在范围内
@@ -356,25 +356,23 @@ python examples/demo_stage_breakdown.py --executor fake --requests 16 --tokens 1
 
 ---
 
-## 2 分钟面试回答
+## 2 分钟项目总结
 
-### "这个项目你是如何一步一步搭建的？使用了哪些方法？"
-
----
+### 项目概述
 
 **第一段：问题定义**
 
-"我当时的目标不是做生产系统，而是一个清晰的教育复现——用纯 Python 实现 vLLM 的 Continuous Batching、PagedAttention 和 Prefix Cache 核心架构，零外部依赖，能在单线程中单步调试。
+目标不是做生产系统，而是一个清晰的可运行复现——用纯 Python 实现 vLLM 的 Continuous Batching、PagedAttention 和 Prefix Cache 核心架构，零外部依赖，能在单线程中单步调试。
 
 技术边界很明确：不做 CUDA kernel、不做 GPU 显存管理、不做分布式。用 ASCII 算术模拟 Transformer，用 Python dict 模拟 KV Cache。
 
-这么做的好处是：所有调度算法和内存管理逻辑都可以用 pdb 走通，不用和 GPU 驱动打交道。"
+所有调度算法和内存管理逻辑都可以用 pdb 走通，无需和 GPU 驱动打交道。
 
 ---
 
 **第二段：架构演进**
 
-"我从数据模型层开始构建。最底层是 Sequence 和 SequenceGroup——Sequence 持有 token 缓冲区、状态机和 KV block table；SequenceGroup 封装用户请求。
+从数据模型层开始构建。最底层是 Sequence 和 SequenceGroup——Sequence 持有 token 缓冲区、状态机和 KV block table；SequenceGroup 封装用户请求。
 
 然后构建了三层 KV 缓存架构：
 - 底层是 BlockAllocator（物理块池，free list + 引用计数）
@@ -385,28 +383,32 @@ python examples/demo_stage_breakdown.py --executor fake --requests 16 --tokens 1
 
 Scheduler 从最初的 3 阶段（Finish→Decode→Admit）演化到 6 阶段，加入了 Decode-First 优先级、Chunked Prefill、Token Budget 模型。Decode-First 保证正在生成的用户不会因为新的 prefill 请求而卡顿。
 
-Prefix Cache 是后来加入的，核心设计是 Two-Phase Probe + Allocate——Scheduler 在计算 budget 前只读地探测缓存，知道了 uncached 长度后再做调度决策，最后 admission 时实际 attach 共享 block。Ref Count 保护共享 block 的 UAF。"
+Prefix Cache 是后来加入的，核心设计是 Two-Phase Probe + Allocate——Scheduler 在计算 budget 前只读地探测缓存，知道了 uncached 长度后再做调度决策，最后 admission 时实际 attach 共享 block。Ref Count 保护共享 block 的 UAF。
 
 ---
 
 **第三段：质量保障**
 
-"测试覆盖是逐步积累的。当前 176 个测试覆盖了每个阶段——从基础的 Sequence 生命周期（4 个测试），到 KV Cache 管理层（13 个测试），到 Prefix Cache 的 ref_count 语义（20 个测试），到 Scheduler 的 decode-first 和 chunked prefill（12 个测试），到 Engine 集成（9 个测试），到 Serving Layer 的 HTTP 生命周期（20 个测试），到故障注入场景（15 个测试），到 Metrics 公式的精确语义验证（39 个测试），再到 Stage Profiler 的计时准确性（15 个测试）。
+测试覆盖是逐步积累的。当前 176 个测试覆盖了每个阶段——从基础的 Sequence 生命周期（4 个测试），到 KV Cache 管理层（13 个测试），到 Prefix Cache 的 ref_count 语义（20 个测试），到 Scheduler 的 decode-first 和 chunked prefill（12 个测试），到 Engine 集成（9 个测试），到 Serving Layer 的 HTTP 生命周期（20 个测试），到故障注入场景（15 个测试），到 Metrics 公式的精确语义验证（39 个测试），再到 Stage Profiler 的计时准确性（15 个测试）。
 
-其中 Metrics 测试是最有价值的——验证了 TPOT 用 num_output_tokens - 1 做分母、cancel 请求不污染 throughput、throughput 分母包含 idle gap 而非 per-request latency 这些细节。
+其中 Metrics 测试验证了 TPOT 用 num_output_tokens - 1 做分母、cancel 请求不污染 throughput、throughput 分母包含 idle gap 而非 per-request latency 这些细节。
 
-Fault Injection 测试覆盖了 cancel storm、timeout storm、disconnect lifecycle 和没有 admission control 时的 OOM crash。核心不变量是：cancel/success 后所有 block 的 ref_count 必须归零。"
+Fault Injection 测试覆盖了 cancel storm、timeout storm、disconnect lifecycle 和没有 admission control 时的 OOM crash。核心不变量是：cancel/success 后所有 block 的 ref_count 必须归零。
 
 ---
 
 **第四段：工程方法与总结**
 
-"方法论上分三层：
-- **我独立完成**：架构设计（模块拆分、调度算法、Two-Phase Prefix Cache、On-Demand 分配）、Metrics 口径决策、异常路径场景设计
+方法论上分三层：
+- **自主完成**：架构设计（模块拆分、调度算法、Two-Phase Prefix Cache、On-Demand 分配）、Metrics 口径决策、异常路径场景设计
 - **Claude Code 辅助**：测试模板生成、文档初稿、diff review 发现 edge case
-- **Claude + 我协作**：Claude 生成代码我 review，发现的问题修正后迭代
+- **协作模式**：Claude 生成代码，review 后修正迭代
 
-这个项目的价值不在于性能，而在于你可以在 commit-by-commit 的粒度上理解 vLLM 的调度器在做什么、BlockManager 为什么需要 ref_count、Prefix Cache 如何降低 TTFT。它把一套工业级的 serving 架构拆解成可单步调试的 Python 代码——这是我面试时最能讲清楚的项目。"
+这个项目的价值在于可以在 commit-by-commit 的粒度上理解 vLLM 的调度器在做什么、BlockManager 为什么需要 ref_count、Prefix Cache 如何降低 TTFT。它把一套工业级的 serving 架构拆解成可单步调试的 Python 代码。
+
+---
+
+## 附录：vLLM 对应关系速查表
 
 ---
 
@@ -418,5 +420,5 @@ ScheduleResult↔SchedulerOutputs, BlockAllocator↔BlockAllocator (with ref_cou
 BlockManager↔BlockSpaceManager (with prefix cache integration),
 BlockTable↔BlockTable (with is_shared flag), PrefixCache↔PrefixCache/BlockPrefixMgr (no LRU),
 FakeModelExecutor↔no direct equivalent, MetricsCollector↔StatLogger (centralized vs distributed),
-StageProfiler↔no direct equivalent (educational tool).
+StageProfiler↔no direct equivalent (lightweight profiling tool).
 -->

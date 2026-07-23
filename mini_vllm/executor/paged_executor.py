@@ -55,6 +55,7 @@ class PagedExecutor:
             config=model_config,
             device=self._device,
             block_size=config.block_size,
+            num_gpu_blocks_override=config.num_gpu_blocks,
             peak_runtime_estimate=config.peak_runtime_estimate,
         )
 
@@ -165,8 +166,10 @@ class PagedExecutor:
             "num_kv_heads": pool.num_kv_heads,
             "head_dim": pool.head_dim,
             "total_slots": pool.total_slots,
+            "kv_slot_capacity": pool.total_slots,
             "total_bytes": pool.total_bytes,
             "tokens_processed": self._total_tokens_processed,
+            "kv_tokens_written": 0,  # tracked at step level, not per-block
         }
 
     @property

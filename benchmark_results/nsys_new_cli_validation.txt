@@ -1,0 +1,39 @@
+=== Nsight Systems 2026.3.1 Validation Results ===
+Date: 2026-07-15
+
+--- Database Comparison ---
+
+OLD trace (nsys 2023.4.4.54):
+  CUPTI_ACTIVITY_KIND_KERNEL:  DOES NOT EXIST
+  CUPTI_ACTIVITY_KIND_MEMCPY:  DOES NOT EXIST
+  CUPTI_ACTIVITY_KIND_RUNTIME: 29,336 records (CUDA API calls)
+  CUPTI_ACTIVITY_KIND_SYNCHRONIZATION: 1,814 records
+  NVTX_EVENTS: 1,553 records
+
+NEW trace (nsys 2026.3.1.157):
+  CUPTI_ACTIVITY_KIND_KERNEL:  21,950 records (GPU kernel execution)
+  CUPTI_ACTIVITY_KIND_MEMCPY:  3,081 records (GPU memory transfers)
+  CUPTI_ACTIVITY_KIND_MEMSET:  40 records (GPU memset)
+  CUPTI_ACTIVITY_KIND_OVERHEAD: exists
+  CUPTI_ACTIVITY_KIND_RUNTIME: 29,308 records (CUDA API calls)
+  CUPTI_ACTIVITY_KIND_SYNCHRONIZATION: similar count
+  NVTX_EVENTS: 1,553 records (including Phase_Prefill, Phase_Decode)
+
+--- Verification Checks ---
+
+1. GPU Kernel records: YES - 21,950 kernel instances captured
+2. Kernel duration: YES - available in cuda_gpu_kern_sum and cuda_gpu_trace
+3. Stream ID: YES - per-kernel stream column in cuda_gpu_trace
+4. Kernel name: YES - fully demangled kernel names available
+5. GPU memcpy/memset: YES - 3,081 memcpy + 40 memset records
+6. NVTX Phase_Decode: YES - 15 Phase_Decode ranges captured
+
+--- Key Observation ---
+
+The NEW nsys version (2026.3.1) captures GPU kernel and memory activity on WSL2.
+The OLD nsys version (2023.4.4) did NOT capture GPU kernel or memory activity,
+even though both used identical -t cuda,nvtx trace flags.
+
+This isolates the difference to the nsys (or bundled CUPTI) version,
+NOT to WSL2 GPU-P being fundamentally incapable of kernel activity tracing.
+

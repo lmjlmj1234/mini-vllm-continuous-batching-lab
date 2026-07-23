@@ -426,6 +426,266 @@ class TestDecodeAttention:
         )
         assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
 
+    # ------------------------------------------------------------------
+    # New: Large batch tests (batch 4, 8)
+    # ------------------------------------------------------------------
+
+    @pytest.fixture
+    def _clean_pool(self):
+        """Reusable clean pool — resets between methods."""
+        pool = make_pool(
+            block_size=self.block_size,
+            num_blocks=self.num_blocks,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+        )
+        return pool
+
+    def _seq_kv_slots(self, seq_idx, num_tokens, slot_stride=512):
+        """Compute slot range for a sequence, with large gaps to prevent overlap."""
+        slot_start = seq_idx * slot_stride
+        return torch.arange(slot_start, slot_start + num_tokens, dtype=torch.long, device=DEVICE)
+
+    def _seq_block_ids(self, slot_start, num_tokens):
+        """Get contiguous block IDs covering [slot_start, slot_start+num_tokens)."""
+        bs = self.block_size
+        start_block = slot_start // bs
+        end_block = (slot_start + num_tokens - 1) // bs
+        return list(range(start_block, end_block + 1))
+
+    def _write_single_seq(self, pool, num_tokens, base, slot_offset):
+        """Write KV data for one sequence and return its physical block IDs."""
+        key = _kv((num_tokens, self.num_kv_heads, self.head_dim), base=base)
+        value = _kv((num_tokens, self.num_kv_heads, self.head_dim), base=base + 1000.0)
+        slots = self._seq_kv_slots(0, num_tokens, slot_offset)
+        _write_triton(key, value, pool, slots)
+        return self._seq_block_ids(slot_offset, num_tokens)
+
+    def _run_decode_compare(self, pool, query, block_table, kv_len_after):
+        """Run reference and triton decode and assert allclose."""
+        ref_out = _decode_ref(query, pool, block_table, kv_len_after,
+                              self.block_size, self.num_kv_heads)
+        triton_out = triton_decode_attention(
+            query, pool.key_caches[0], pool.value_caches[0],
+            block_table, kv_len_after, self.block_size,
+        )
+        assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
+
+    def test_batch_4_same_length(self):
+        """Batch=4, all sequences have the same context length."""
+        pool = make_pool(block_size=16, num_blocks=256, num_kv_heads=2, head_dim=64)
+        batch = 4
+        seq_len = 16  # exactly 1 block
+
+        block_rows = []
+        kv_lens = []
+        for i in range(batch):
+            block_ids = self._write_single_seq(pool, seq_len, base=10.0 + i * 100,
+                                                slot_offset=i * 512)
+            block_rows.append(block_ids)
+            kv_lens.append(seq_len)
+
+        max_blocks = max(len(r) for r in block_rows)
+        block_table = torch.full((batch, max_blocks), -1, dtype=torch.long, device=DEVICE)
+        for i, row in enumerate(block_rows):
+            block_table[i, :len(row)] = torch.tensor(row, dtype=torch.long, device=DEVICE)
+        kv_len_after = torch.tensor(kv_lens, dtype=torch.int32, device=DEVICE)
+        query = _kv((batch, self.num_q_heads, self.head_dim), base=50.0)
+
+        self._run_decode_compare(pool, query, block_table, kv_len_after)
+
+    def test_batch_8_same_length(self):
+        """Batch=8, all sequences have the same context length."""
+        pool = make_pool(block_size=16, num_blocks=512, num_kv_heads=2, head_dim=64)
+        batch = 8
+        seq_len = 32  # exactly 2 blocks
+
+        block_rows = []
+        kv_lens = []
+        for i in range(batch):
+            block_ids = self._write_single_seq(pool, seq_len, base=10.0 + i * 100,
+                                                slot_offset=i * 512)
+            block_rows.append(block_ids)
+            kv_lens.append(seq_len)
+
+        max_blocks = max(len(r) for r in block_rows)
+        block_table = torch.full((batch, max_blocks), -1, dtype=torch.long, device=DEVICE)
+        for i, row in enumerate(block_rows):
+            block_table[i, :len(row)] = torch.tensor(row, dtype=torch.long, device=DEVICE)
+        kv_len_after = torch.tensor(kv_lens, dtype=torch.int32, device=DEVICE)
+        query = _kv((batch, self.num_q_heads, self.head_dim), base=50.0)
+
+        self._run_decode_compare(pool, query, block_table, kv_len_after)
+
+    def test_batch_4_ragged(self):
+        """Batch=4, different context lengths (ragged)."""
+        pool = make_pool(block_size=16, num_blocks=256, num_kv_heads=2, head_dim=64)
+        seq_lens = [5, 17, 32, 50]
+        batch = len(seq_lens)
+
+        block_rows = []
+        for i, sl in enumerate(seq_lens):
+            block_ids = self._write_single_seq(pool, sl, base=10.0 + i * 100,
+                                                slot_offset=i * 512)
+            block_rows.append(block_ids)
+        kv_len_after = torch.tensor(seq_lens, dtype=torch.int32, device=DEVICE)
+
+        max_blocks = max(len(r) for r in block_rows)
+        block_table = torch.full((batch, max_blocks), -1, dtype=torch.long, device=DEVICE)
+        for i, row in enumerate(block_rows):
+            block_table[i, :len(row)] = torch.tensor(row, dtype=torch.long, device=DEVICE)
+        query = _kv((batch, self.num_q_heads, self.head_dim), base=50.0)
+
+        self._run_decode_compare(pool, query, block_table, kv_len_after)
+
+    def test_batch_8_ragged(self):
+        """Batch=8, every sequence has a different context length (highly ragged)."""
+        pool = make_pool(block_size=16, num_blocks=512, num_kv_heads=2, head_dim=64)
+        seq_lens = [1, 3, 7, 15, 16, 17, 31, 32]
+        batch = len(seq_lens)
+
+        block_rows = []
+        for i, sl in enumerate(seq_lens):
+            block_ids = self._write_single_seq(pool, sl, base=10.0 + i * 100,
+                                                slot_offset=i * 512)
+            block_rows.append(block_ids)
+        kv_len_after = torch.tensor(seq_lens, dtype=torch.int32, device=DEVICE)
+
+        max_blocks = max(len(r) for r in block_rows)
+        block_table = torch.full((batch, max_blocks), -1, dtype=torch.long, device=DEVICE)
+        for i, row in enumerate(block_rows):
+            block_table[i, :len(row)] = torch.tensor(row, dtype=torch.long, device=DEVICE)
+        query = _kv((batch, self.num_q_heads, self.head_dim), base=50.0)
+
+        self._run_decode_compare(pool, query, block_table, kv_len_after)
+
+    def test_batch_4_noncontiguous(self):
+        """Batch=4, non-contiguous physical blocks per sequence."""
+        pool = make_pool(block_size=16, num_blocks=512, num_kv_heads=2, head_dim=64)
+        batch = 4
+        seq_len = 32  # 2 blocks worth
+
+        block_rows = []
+        for i in range(batch):
+            key = _kv((seq_len, self.num_kv_heads, self.head_dim), base=10.0 + i * 100)
+            value = _kv((seq_len, self.num_kv_heads, self.head_dim), base=10.0 + i * 100 + 1000.0)
+            # Write to two non-adjacent slots per block, creating a gap
+            slot_start_first = i * 512
+            slot_start_second = i * 512 + 256  # gap of 256 slots = 16 blocks
+            slots = torch.cat([
+                torch.arange(slot_start_first, slot_start_first + 16, dtype=torch.long, device=DEVICE),
+                torch.arange(slot_start_second, slot_start_second + 16, dtype=torch.long, device=DEVICE),
+            ])
+            _write_triton(key, value, pool, slots)
+            block_ids = [slot_start_first // 16, slot_start_second // 16]
+            block_rows.append(block_ids)
+
+        kv_len_after = torch.tensor([seq_len] * batch, dtype=torch.int32, device=DEVICE)
+        max_blocks = max(len(r) for r in block_rows)
+        block_table = torch.full((batch, max_blocks), -1, dtype=torch.long, device=DEVICE)
+        for i, row in enumerate(block_rows):
+            block_table[i, :len(row)] = torch.tensor(row, dtype=torch.long, device=DEVICE)
+        query = _kv((batch, self.num_q_heads, self.head_dim), base=50.0)
+
+        self._run_decode_compare(pool, query, block_table, kv_len_after)
+
+    def test_batch_4_ragged_noncontiguous(self):
+        """Batch=4, ragged lengths + non-contiguous blocks (worst case).
+
+        Each sequence's KV is split across two non-adjacent physical block
+        ranges. The block table correctly lists ALL physical blocks for the
+        sequence's tokens, but the two block groups are separated by a gap
+        (non-adjacent), testing that the Triton kernel handles non-contiguous
+        physical block ID mappings per sequence.
+        """
+        pool = make_pool(block_size=16, num_blocks=512, num_kv_heads=2, head_dim=64)
+        seq_lens = [7, 19, 33, 48]
+        batch = len(seq_lens)
+
+        block_rows = []
+        for i, sl in enumerate(seq_lens):
+            key = _kv((sl, self.num_kv_heads, self.head_dim), base=10.0 + i * 100)
+            value = _kv((sl, self.num_kv_heads, self.head_dim), base=10.0 + i * 100 + 1000.0)
+            # Two non-adjacent ranges: first at base_slot, second at gap_slot
+            first_len = min(sl, 16)
+            second_len = sl - first_len
+            base_slot = i * 512
+            gap_slot = i * 512 + 512  # 512-slot gap = 32 blocks apart
+
+            # Write first chunk
+            first_slots = torch.arange(
+                base_slot, base_slot + first_len, dtype=torch.long, device=DEVICE,
+            )
+            _write_triton(key[:first_len], value[:first_len], pool, first_slots)
+            first_blocks = list(range(
+                base_slot // 16,
+                base_slot // 16 + (first_len + 15) // 16,
+            ))
+
+            # Write second chunk
+            second_blocks = []
+            if second_len > 0:
+                second_slots = torch.arange(
+                    gap_slot, gap_slot + second_len, dtype=torch.long, device=DEVICE,
+                )
+                _write_triton(key[first_len:], value[first_len:], pool, second_slots)
+                second_blocks = list(range(
+                    gap_slot // 16,
+                    gap_slot // 16 + (second_len + 15) // 16,
+                ))
+
+            block_rows.append(first_blocks + second_blocks)
+
+        kv_len_after = torch.tensor(seq_lens, dtype=torch.int32, device=DEVICE)
+        max_blocks = max(len(r) for r in block_rows)
+        block_table = torch.full((batch, max_blocks), -1, dtype=torch.long, device=DEVICE)
+        for i, row in enumerate(block_rows):
+            block_table[i, :len(row)] = torch.tensor(row, dtype=torch.long, device=DEVICE)
+        query = _kv((batch, self.num_q_heads, self.head_dim), base=50.0)
+
+        self._run_decode_compare(pool, query, block_table, kv_len_after)
+
+    def test_cross_block_boundary_large(self):
+        """50 tokens spanning 4 blocks verifies cross-boundary correctness."""
+        pool = make_pool(block_size=16, num_blocks=128, num_kv_heads=2, head_dim=64)
+        seq_len = 50
+        block_ids = self._write_single_seq(pool, seq_len, base=10.0, slot_offset=0)
+        block_table = torch.tensor([block_ids], dtype=torch.long, device=DEVICE)
+        kv_len_after = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
+        query = _kv((1, self.num_q_heads, self.head_dim), base=50.0)
+
+        self._run_decode_compare(pool, query, block_table, kv_len_after)
+
+    def test_qwen_exact_config(self):
+        """Exact Qwen2.5-0.5B config: 8 Q heads, 2 KV heads, head_dim=64, GQA=4."""
+        pool = make_pool(block_size=16, num_blocks=256, num_kv_heads=2, head_dim=64)
+        batch = 2
+        seq_lens = [8, 24]
+
+        block_rows = []
+        for i, sl in enumerate(seq_lens):
+            block_ids = self._write_single_seq(pool, sl, base=10.0 + i * 100,
+                                                slot_offset=i * 512)
+            block_rows.append(block_ids)
+        kv_len_after = torch.tensor(seq_lens, dtype=torch.int32, device=DEVICE)
+
+        max_blocks = max(len(r) for r in block_rows)
+        block_table = torch.full((batch, max_blocks), -1, dtype=torch.long, device=DEVICE)
+        for i, row in enumerate(block_rows):
+            block_table[i, :len(row)] = torch.tensor(row, dtype=torch.long, device=DEVICE)
+
+        # Use Qwen2.5-0.5B config: 8 query heads
+        num_q_heads = 8
+        query = _kv((batch, num_q_heads, 64), base=50.0)
+
+        ref_out = _decode_ref(query, pool, block_table, kv_len_after,
+                              16, 2)
+        triton_out = triton_decode_attention(
+            query, pool.key_caches[0], pool.value_caches[0],
+            block_table, kv_len_after, 16,
+        )
+        assert torch.allclose(ref_out, triton_out, atol=1e-2, rtol=1e-2)
+
 
 # =============================================================================
 # C3 — GatherPrefix tests (4 tests)

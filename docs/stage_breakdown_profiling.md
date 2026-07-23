@@ -1,6 +1,6 @@
 # Stage Breakdown Profiling
 
-A lightweight, teaching-oriented stage profiler for understanding where
+A lightweight stage profiler for understanding where
 time goes in an LLM serving engine.
 
 ## Why Stage Breakdown?
@@ -155,7 +155,7 @@ Stage Breakdown Profiling
   ...
 ```
 
-## Interview Guide
+## Usage Guide
 
 ### How to explain this experiment
 
@@ -206,8 +206,8 @@ bottleneck? Is prefill or decode dominant?"
 | **GPU kernels** | No (only Python wall) | Yes (detailed) | Yes |
 | **Python-only** | Yes | No | Partial |
 | **Dependencies** | None (stdlib) | NVIDIA tools | PyTorch |
-| **Interview use** | Explain serving architecture | Low-level GPU work | Model-level optimisation |
+| **Best for** | Serving architecture explanation | Low-level GPU work | Model-level optimisation |
 
 **Bottom line:** This profiler is for *serving architecture understanding*
-and *interview demonstrations*. Use Nsight Systems / PyTorch profiler when
+and *architectural demonstrations*. Use Nsight Systems / PyTorch profiler when
 you need to optimise GPU kernel performance.

@@ -1,0 +1,1 @@
+scenario,requests,max_tokens,decode_steps,avg_step_ms,avg_gpu_ms,avg_cpu_gap_ms,p50_cpu_gap_ms,p95_cpu_gap_ms,gpu_pct,scheduler_pct,input_build_pct,kv_ensure_pct,theoretical_hideable_ms,realistic_hideable_ms

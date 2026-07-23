@@ -31,11 +31,13 @@ class BlockManager:
     """
 
     def __init__(self, block_size: int, allocator: BlockAllocator,
-                 profiler: Optional[object] = None) -> None:
+                 profiler: Optional[object] = None,
+                 enable_prefix_caching: bool = True) -> None:
         self._block_size = block_size #块大小
         self._allocator = allocator #持有底层 BlockAllocator 的引用（不是自己创建）
         self._tables: Dict[str, BlockTable] = {} # 请求 ID → BlockTable 的字典，一个 Sequence 对应一张表
-        self._prefix_cache = PrefixCache() # 前缀缓存实例
+        self._prefix_cache = PrefixCache() if enable_prefix_caching else None
+        self._enable_prefix_caching = enable_prefix_caching
         self._profiler = profiler
         """Optional profiler for stage timing (kv_cache_allocation, etc.)."""
 
@@ -54,7 +56,7 @@ class BlockManager:
     # ------------------------------------------------------------------
 
     @property
-    def prefix_cache(self) -> PrefixCache:
+    def prefix_cache(self) -> Optional[PrefixCache]:
         # 暴露前缀缓存实例（供外部只读访问）
         return self._prefix_cache
 
@@ -75,7 +77,17 @@ class BlockManager:
 
         Only consecutive matches from block index 0 count.  The first
         miss or stale entry ends the matched prefix.
+
+        When ``enable_prefix_caching`` is False, always returns zero
+        cached tokens — every prompt starts from scratch.
         """
+        if not self._enable_prefix_caching:
+            return PrefixCacheProbeResult(
+                matched_block_count=0,
+                cached_token_count=0,
+                matched_physical_block_ids=[],
+            )
+
         t0 = time.time()
         hashes = compute_block_hashes(prompt_token_ids, self._block_size)
         matched_pids: List[int] = []
@@ -111,9 +123,16 @@ class BlockManager:
         blocks.  Matching blocks are shared (ref_count incremented) and
         prepopulated in the block table.  Non-matching blocks will be
         allocated on-demand during ``ensure_block()``.
+
+        When prefix caching is disabled, all blocks are allocated
+        on-demand.
         """
         table = BlockTable(seq.seq_id, self._block_size)
         self._tables[seq.seq_id] = table
+
+        if not self._enable_prefix_caching:
+            self._shared_prefix_blocks[seq.seq_id] = 0
+            return
 
         # Compute block hashes and check cache
         hashes = self.compute_block_hashes(seq)
@@ -166,7 +185,7 @@ class BlockManager:
             is_prompt_position = position < len(seq.prompt_token_ids)
             cached_pid: Optional[int] = None
 
-            if is_prompt_position:
+            if is_prompt_position and self._enable_prefix_caching:
                 hashes = self._block_hashes.get(seq.seq_id)
                 if hashes is not None and logical_idx < len(hashes):
                     h = hashes[logical_idx]
@@ -200,7 +219,7 @@ class BlockManager:
 
                 # Register the new block in prefix cache (only for prompt
                 # positions — decode tokens are unpredictable)
-                if is_prompt_position:
+                if is_prompt_position and self._enable_prefix_caching:
                     hashes = self._block_hashes.get(seq.seq_id)
                     if hashes is not None and logical_idx < len(hashes):
                         self._prefix_cache.insert(hashes[logical_idx], pid)
@@ -324,5 +343,5 @@ class BlockManager:
 
     def stats(self) -> dict:
         s = self._allocator.stats()
-        s["prefix_cache_entries"] = self._prefix_cache.size()
+        s["prefix_cache_entries"] = self._prefix_cache.size() if self._prefix_cache else 0
         return s

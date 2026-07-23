@@ -1,7 +1,7 @@
 # mini-vLLM Continuous Batching Lab
 
-**A minimal, educational re-implementation of vLLM's Continuous Batching engine.**
-**一个极简的、用于教学的 vLLM 连续批处理引擎复刻实现。**
+**A minimal, from-scratch implementation of vLLM's Continuous Batching engine.**
+**一个极简的 vLLM 连续批处理引擎复刻实现。**
 
 ## Why Continuous Batching?
 
@@ -241,7 +241,7 @@ mini-vllm-continuous-batching-lab/
 ├── docs/
 │   ├── Phase1_Architecture.md          # Architecture deep-dive
 │   ├── VLLM_Mapping.md                 # Module-by-module mapping to vLLM
-│   ├── Learning_Notes.md               # Design decisions & lessons learned
+│   ├── Design_Notes.md                 # Design decisions & engineering notes
 │   ├── Runtime_Timeline.md             # Engine step lifecycle, sequence state machine
 │   ├── Scheduler.md                    # 6-phase scheduling, chunked prefill, budget model
 │   └── Memory_Manager.md               # 3-layer cache, on-demand allocation, eager comparison
@@ -330,7 +330,7 @@ end-to-end serving request latency into individual stages:
 - `engine_step_total` — total wall-clock per engine step
 
 The profiler uses Python `time.time()` and context managers — zero external
-dependencies. It is designed for **teaching and interview demonstrations**,
+dependencies. It is designed for **latency breakdown demonstrations**,
 not production GPU profiling.
 
 ```bash

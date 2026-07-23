@@ -1,0 +1,29 @@
+=== Nsight Systems WSL Upgrade Log ===
+Date: 2026-07-15
+
+--- Pre-upgrade state ---
+Old nsys version: 2023.4.4.54-234433681190v0
+Old nsys path: /usr/local/cuda/bin/nsys → /usr/local/cuda-12.4/bin/nsys
+GPU: NVIDIA GeForce RTX 3060 (12 GB VRAM)
+WSL: Ubuntu 22.04.5 LTS, kernel 6.6.87.2-microsoft-standard-WSL2
+WSL GPU-P: /dev/dxg present, /dev/nvidia* absent
+
+--- Upgrade target ---
+Target version: 2026.3.1 (matching Windows GUI version)
+Platform: Linux x86_64
+
+
+--- Post-upgrade state ---
+New nsys version: 2026.3.1.157-263138048394v0
+New nsys path: /home/mxtia/.local/nsight-systems-2026.3.1/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/nsys
+Install method: dpkg-deb extract from .deb (user-local, no sudo)
+Source: NVIDIA official CUDA WSL Ubuntu repo (direct download fallback)
+
+
+--- Validation Results ---
+SQLite comparison:
+  OLD trace (2023.4.4):  CUPTI_ACTIVITY_KIND_KERNEL = NOT FOUND
+  NEW trace (2026.3.1):  CUPTI_ACTIVITY_KIND_KERNEL = 21,950 records ✓
+                          CUPTI_ACTIVITY_KIND_MEMCPY = 3,081 records ✓
+
+Verdict: Upgrade resolved the GPU kernel activity capture issue.

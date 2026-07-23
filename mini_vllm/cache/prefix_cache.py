@@ -69,7 +69,7 @@ class PrefixCache:
       correct because for prompt tokens we know exactly which tokens
       go into each block before the forward pass writes them.
 
-    - The cache has **no eviction** in this educational version.
+    - The cache has **no eviction** in this version.
       A production system would add LRU or capacity-based eviction.
 
     - This cache is the foundation for Copy-on-Write: when a shared

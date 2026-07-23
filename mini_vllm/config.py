@@ -97,6 +97,12 @@ class Config:
     trace_enabled: bool = False
     """If True, record per-step scheduler trace (default off)."""
 
+    enable_prefix_caching: bool = True
+    """If True, BlockManager uses prefix cache to share blocks between
+    sequences with identical prompt prefixes.  When False, every sequence
+    gets fresh blocks — avoids duplicate slot mappings required by Triton's
+    ``triton_cache_write`` assertion."""
+
     static_batch_mode: bool = False
     """If True, scheduler does NOT admit new waiting groups.
     Running groups must all finish before any waiting groups are considered.
